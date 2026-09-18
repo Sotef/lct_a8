@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints/
+jupyter_cloud_config.yaml
+
+# Data (raw is large) — keep extracted? adjust as needed
+research/dataset/
+*.7z
+
+# При желании коммитить маленькие справочники (раскомментировать):
+# !research/dataset/справочник_каналов_датчиков.csv
+# !research/dataset/справочник_объектов_диспетчер.csv
+# !research/dataset/журнал_событий_пример.csv
+# Полная пересборка остального: см. research/docs/REPRODUCE_DATASETS.md
+
+# ML artifacts
+*.onnx
+research/models/
+research/parquet/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+D:/temp/
