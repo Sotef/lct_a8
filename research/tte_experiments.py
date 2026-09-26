@@ -69,12 +69,20 @@ def impute_train_median(fit_mask, X_train_pt, X_eval_pt):
     Для CatBoost использовать исходные матрицы (NaN понимает нативно)."""
     med = X_train_pt.median(numeric_only=True)
     return X_train_pt.fillna(med), X_eval_pt.fillna(med)
-def fit_discrete_hazard(X_tr, y_tr, X_va, y_va, iters=400, lr=0.05, depth=6, seed=42):
-    """Person-time discrete hazard: CatBoost(Logloss) на развернутых строках."""
+def fit_discrete_hazard(X_tr, y_tr, X_va, y_va, iters=1000, lr=0.03, depth=10,
+                        seed=42, l2_leaf_reg=3.0, task_type="CPU"):
+    """Person-time discrete hazard: CatBoost(Logloss) на развернутых строках.
+
+    Дефолты — практический оптимум по fire (§15): iters=1000, lr=0.03, depth=10,
+    l2_leaf_reg=3.0. Optuna-параметры (models/optuna_fire_best.json) на полном
+    протоколе давали ниже (хранятся как справочный пресет).
+    """
     from catboost import CatBoostClassifier, Pool
     m = CatBoostClassifier(iterations=iters, learning_rate=lr, depth=depth,
-                           random_seed=seed, task_type="CPU", loss_function="Logloss",
-                           eval_metric="Logloss", early_stopping_rounds=100, verbose=100)
+                           l2_leaf_reg=l2_leaf_reg, random_seed=seed,
+                           task_type=task_type, loss_function="Logloss",
+                           eval_metric="Logloss", early_stopping_rounds=300,
+                           verbose=100)
     m.fit(Pool(X_tr, y_tr), eval_set=Pool(X_va, y_va))
     return m
 

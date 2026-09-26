@@ -40,8 +40,13 @@ TASKS = {
         "types": ["Датчик дыма", "Тепловой датчик", "Ручной извещатель",
                   "Датчик температуры"],
         "csv": "subdaily_panel_fire6h.csv",
-        "event_col": "тревог",       # серия тревог дыма/пожара
-        "desc": "пожарный риск",
+        # НОВОЕ событие (итерация 3): «серьёзная тревога» = подтверждённое
+        # задымление (>=2 дымовых канала объекта за 6ч бакет) ИЛИ срабатывание
+        # ручного извещателя («Рычаг сдернут»). Колонка собирается
+        # rebuild_task_panels.py; раньше событием была серия ЛЮБЫХ тревог дыма
+        # (в основном спорадические/ложные -> Uno-C~0.51).
+        "event_col": "серьёзных",
+        "desc": "пожарный риск: серьёзная тревога (подтв. дым >=2 ИПР / ручной)",
     },
     "sensor": {
         "types": ["Датчик дыма", "Датчик движения", "Датчик температуры",
@@ -74,12 +79,11 @@ def build_task_panel(task: str, recompute: bool = True) -> pd.DataFrame:
 
 
 def prepare_subjects(panel: pd.DataFrame, task: str,
-                     cache: str | None = None) -> pd.DataFrame:
+                     cfg: dict, cache: str | None = None) -> pd.DataFrame:
     """Субъекты с цензурой (переиспользует tte_pipeline, событие - серия event_col)."""
     fp = None if cache is None else fe.DATASET / cache
     if fp is not None and fp.exists():
         return pd.read_parquet(fp)
-    cfg = TASKS[task]
     panel = tte.refit_z_train_only(panel)
     panel = tte.add_series_context(panel, event_col=cfg["event_col"])
     subjects = tte.add_tte_labels(panel)
@@ -92,8 +96,15 @@ def prepare_subjects(panel: pd.DataFrame, task: str,
     return subjects
 def run(task: str, args: argparse.Namespace) -> None:
     cfg = TASKS[task]
+    if getattr(args, "event_col", None):
+        cfg = {**cfg, "event_col": args.event_col}
+    suf = "" if cfg["event_col"] == TASKS[task]["event_col"] \
+        else f"_{cfg['event_col']}"
     panel = build_task_panel(task, recompute=args.build)
-    subjects = prepare_subjects(panel, task, cache=f"tte_subjects_{task}.parquet")
+    cache = f"tte_subjects_{task}.parquet"
+    if suf:
+        cache = f"tte_subjects_{task}{suf}.parquet"
+    subjects = prepare_subjects(panel, task, cfg, cache=cache)
 
     print(f"[main {task}] субъектов: {subjects.shape[0]:,} | событий в 30д: "
           f"{subjects['event_flag'].mean() * 100:.1f}%")
@@ -112,8 +123,9 @@ def run(task: str, args: argparse.Namespace) -> None:
     X_tr, y_tr = tte.expand_person_time(tr, X_cols, tte.HORIZON_BUCKETS)
     X_va, y_va = tte.expand_person_time(va, X_cols, tte.HORIZON_BUCKETS)
     m = fit_discrete_hazard(X_tr, y_tr, X_va, y_va, iters=args.iters,
-                            lr=args.lr, depth=args.depth, seed=args.seed)
-    m.save_model(MODELS / f"tte_{task}_discrete_hazard.cbm")
+                            lr=args.lr, depth=args.depth, seed=args.seed,
+                            task_type=args.task_type)
+    m.save_model(MODELS / f"tte_{task}{suf}_discrete_hazard.cbm")
 
     surv_tr = tte.make_surv_struct(tr["event_flag"], tr["obs_days"])
     surv_ho = tte.make_surv_struct(ho["event_flag"], ho["obs_days"])
@@ -154,24 +166,28 @@ def run(task: str, args: argparse.Namespace) -> None:
     out["p24"] = p_ho24
     out["risk30"] = risk
     out["exp_days"] = S_ho.sum(axis=1) / tte.STEPS_PER_DAY
-    out.to_parquet(MODELS / f"tte_{task}_holdout.parquet", index=False)
-    (MODELS / f"tte_{task}_report.txt").write_text(txt, encoding="utf-8")
+    out.to_parquet(MODELS / f"tte_{task}{suf}_holdout.parquet", index=False)
+    (MODELS / f"tte_{task}{suf}_report.txt").write_text(txt, encoding="utf-8")
     print(f"[save] model/preds/report -> models/tte_{task}_*")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--task", required=True, choices=list(TASKS))
+    ap.add_argument("--event-col", default=None,
+                    help="переопределить столбец-событие (для A/B старого/нового события)")
     ap.add_argument("--build", action="store_true", help="пересобрать панель")
     ap.add_argument("--n-starts", type=int, default=15_000)
     ap.add_argument("--n-fault", type=int, default=10_000)
     ap.add_argument("--n-nonfault", type=int, default=10_000)
     ap.add_argument("--n-val", type=int, default=6_000)
     ap.add_argument("--n-hold", type=int, default=20_000)
-    ap.add_argument("--iters", type=int, default=350)
-    ap.add_argument("--lr", type=float, default=0.05)
-    ap.add_argument("--depth", type=int, default=6)
+    ap.add_argument("--iters", type=int, default=1000)
+    ap.add_argument("--lr", type=float, default=0.03)
+    ap.add_argument("--depth", type=int, default=10)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--task-type", type=str, default="CPU", choices=["CPU", "GPU"],
+                    help="CPU или GPU для CatBoost (GPU: только iters/lr/depth/l2)")
     ns = ap.parse_args()
     run(ns.task, ns)
 

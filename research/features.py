@@ -22,6 +22,11 @@ DATASET = du.find_dataset_dir()
 FAULT_STATUSES = {"Неисправен", "Обесточен", "Отключено устройство", "Затоплен"}
 NOISE_VALUES = {"0.00", "0.01", "0.02"}
 
+# Семантические значения журнала, значимые для fire/access/sensor:
+SMOKE_ALARM_VALUES = {"Обнаружен дым", "Дым", "Задымление", "Пожар"}
+MANUAL_ALARM_VALUES = {"Рычаг сдернут"}
+OPEN_LOOP_VALUES = {"Не замкнут"}
+
 WEAR_TYPES = ["Состояние насоса", "Состояние вентилятора", "Состояние фазы"]
 
 _BASE_FEATS = ["событий", "тревог", "неисправностей", "шума"]
@@ -402,14 +407,41 @@ def add_object_context(panel: pd.DataFrame,
 
 
 def _aggregate_bucket_year(year: str, ch_set, fault_statuses: set,
-                           noise_values: set) -> pd.DataFrame:
-    """События по ВСЕМ WEAR-каналам за год → (ид_канала_данных, бакет, счётчики).
+                           noise_values: set,
+                           extra_cols: Optional[dict] = None) -> pd.DataFrame:
+    """События по выбранным каналам за год → (ид_канала_данных, бакет, счётчики).
 
     Бакет = 6-часовой интервал (int: число бакетов от эпохи). Возвращает
-    колонки: ид_канала_данных, бакет, событий, тревог, неисправностей, шума.
+    колонки: ид_канала_данных, бакет, событий, тревог, неисправностей, шума
+    плюс счётчики из `extra_cols`.
+
+    extra_cols: name -> spec:
+      {"kind": "alarm_by_type", "types": [...], "count_channels": bool}
+        — счётчик тревог (тревожное == 't') каналов заданных типов;
+      {"kind": "value_by_type", "map": {тип: set(значений)}, "count_channels": bool}
+        — счётчик событий с заданными значениями_датчика по типам.
+    count_channels влияет на объектные колонки «число каналов» (см.
+    make_subdaily_panel), здесь просто агрегируется по (канал, бакет).
     """
-    cols = ["ид_канала_данных", "бакет", "событий", "тревог", "неисправностей", "шума"]
+    extra_cols = extra_cols or {}
+    cols = ["ид_канала_данных", "бакет", "событий", "тревог",
+            "неисправностей", "шума"] + list(extra_cols)
     hour_ns = BUCKET_HOURS * 3600 * 10 ** 9
+
+    # Предрасчёт для быстрых .isin(): id-множества каналов и значений.
+    # Если вызывающий код передал готовые «channels» (множество ид_канала_данных
+    # из реестра) — используем их напрямую без сопоставления строк типов.
+    alarm_chans = {n: set(s.get("channels", ())) or set(s.get("types", []))
+                   for n, s in extra_cols.items() if s.get("kind") == "alarm_by_type"}
+    value_chans: dict[str, tuple[set, set]] = {}
+    for n, s in extra_cols.items():
+        if s.get("kind") != "value_by_type":
+            continue
+        chans = set(s.get("channels", ()))
+        if not chans and s.get("map"):
+            chans = set(s.get("map", {}).keys())
+        value_chans[n] = (chans, set(s.get("values", ())))
+
     for fp in du.journal_files():
         if fp.name.split("-")[2].split(".")[0] != year:
             continue
@@ -431,21 +463,34 @@ def _aggregate_bucket_year(year: str, ch_set, fault_statuses: set,
             ch["_неиспр"] = ch["значение_датчика"].isin(fault_statuses)
             ch["_шум"] = ch["значение_датчика"].isin(noise_values)
             ch["_трев"] = ch["тревожное"].eq("t")
-            chd = ch.groupby(["ид_канала_данных", "бакет"], sort=False).agg(
-                событий=("ид_канала_данных", "size"),
-                тревог=("_трев", "sum"),
-                неисправностей=("_неиспр", "sum"),
-                шума=("_шум", "sum"),
-            ).reset_index()
+            # Оптимизация: hash-based pandas .isin вместо np.isin по строкам
+            # (np.isin(str, list) — O(n*m), минуты на чанк; .isin(set) — O(n)).
+            ch_ids_ser = ch["ид_канала_данных"].astype(str)
+            values_ser = ch["значение_датчика"].fillna("<нет>").astype(str)
+            agg: dict = {
+                "событий": ("ид_канала_данных", "size"),
+                "тревог": ("_трев", "sum"),
+                "неисправностей": ("_неиспр", "sum"),
+                "шума": ("_шум", "sum"),
+            }
+            for n, spec in extra_cols.items():
+                if n in alarm_chans:
+                    mask = ch_ids_ser.isin(alarm_chans[n]) & ch["_трев"]
+                else:
+                    cset, vset = value_chans[n]
+                    mask = ch_ids_ser.isin(cset) & values_ser.isin(vset)
+                ch[f"_x_{n}"] = mask
+                agg[n] = (f"_x_{n}", "sum")
+            chd = ch.groupby(["ид_канала_данных", "бакет"], sort=False) \
+                    .agg(**agg).reset_index()
             rows.append(chd)
         if not rows:
             return pd.DataFrame(columns=cols)
         chd = pd.concat(rows, ignore_index=True)
         # дедупликация границ чанков: (канал, бакет) суммируется
+        sum_cols = {c: (c, "sum") for c in cols if c not in ("ид_канала_данных", "бакет")}
         chd = chd.groupby(["ид_канала_данных", "бакет"], sort=False) \
-                 .agg(событий=("событий", "sum"), тревог=("тревог", "sum"),
-                      неисправностей=("неисправностей", "sum"),
-                      шума=("шума", "sum")).reset_index()
+                 .agg(**sum_cols).reset_index()
         return chd
     return pd.DataFrame(columns=cols)
 
@@ -595,19 +640,31 @@ def make_subdaily_panel(
     years: Optional[Iterable[str]] = None,
     recompute: bool = False,
     out_csv: Optional[pathlib.Path] = None,
+    extra_cols: Optional[dict] = None,
+    precomputed: Optional[list[pd.DataFrame]] = None,
 ) -> pd.DataFrame:
     """6-часовой панэль «канал × бакет» для горизонтов 6/12/24/48 часов.
 
     Источник: сырые агрегаты `dataset/_buckets_raw/_buckets_raw_<год>.csv`
-    (сборка: `notebooks/00_data_pipeline.ipynb`). Добавляет:
-    - счётчики за бакет: событий, тревог, неисправностей, шума;
+    (сборка: `notebooks/00_data_pipeline.ipynb`); при `recompute=True` —
+    повторное чтение журналов (`extra_cols` требует recompute). Добавляет:
+    - счётчики за бакет: событий, тревог, неисправностей, шума + extra_cols;
     - календарные окна 12ч/24ч/48ч/7д/30д (`_сум_...`);
     - z_событий (пер-канальная нормализация, чистые бакеты);
     - сезонность: час_бакета, день_недели, месяц, день_года, год_неделя;
     - цели цель_6ч/12ч/24ч/48ч (NaN в кампанийных неделях);
     - бакетный контекст объекта (все каналы объекта за тот же 6ч бакет
-      и его календарные окна — без утечки будущего в пределах дня).
+      и его календарные окна — без утечки будущего в пределах дня);
+      для extra_cols с count_channels=True — объектный счётчик
+      `каналов_<name>_об_б` (число каналов объекта, у которых name > 0).
+
+    extra_cols: name -> spec (см. _aggregate_bucket_year).
+    precomputed: готовые по-годовые таблицы (ид_канала_данных, бакет, счётчики…)
+      из параллельной сборки `_aggregate_bucket_year` — позволяет пропустить
+      длительное чтение журналов в этом процессе (см. _parallel_build_sensor.py).
+      При использовании годов должно быть столько же, сколько частей.
     """
+    extra_cols = dict(extra_cols) if extra_cols else {}
     if types is None:
         types = WEAR_TYPES
     types = list(types)
@@ -615,7 +672,9 @@ def make_subdaily_panel(
     if out_csv is None:
         out_csv = DATASET / "subdaily_panel_wear_6h.csv"
     out_csv = pathlib.Path(out_csv)
-    if not recompute and out_csv.exists():
+    if not recompute and precomputed is None and out_csv.exists():
+        if extra_cols:
+            raise ValueError("make_subdaily_panel: extra_cols требует recompute=True")
         return pd.read_csv(out_csv, dtype={"ид_канала_данных": str, "дата": str})
 
     ref_ch = du.load_ref_channels()[["ид_канала_данных", "тип_датчика", "ид_объект"]]
@@ -625,12 +684,18 @@ def make_subdaily_panel(
     if recompute:
         parts: list[pd.DataFrame] = []
         for year in years:
-            agg = _aggregate_bucket_year(year, ch_set, FAULT_STATUSES, NOISE_VALUES)
+            agg = _aggregate_bucket_year(year, ch_set, FAULT_STATUSES, NOISE_VALUES,
+                                         extra_cols=extra_cols)
             if len(agg):
                 parts.append(agg)
                 print(f"  {year}: {len(agg):,} бакето-строк")
         if not parts:
             raise ValueError(f"make_subdaily_panel: нет данных за {years}")
+        df = pd.concat(parts, ignore_index=True)
+    elif precomputed is not None:
+        parts = list(precomputed)
+        if not parts:
+            raise ValueError("make_subdaily_panel: precomputed пуст")
         df = pd.concat(parts, ignore_index=True)
     else:
         if not _BUCKET_RAW_DIR.exists():
@@ -659,8 +724,10 @@ def make_subdaily_panel(
     df["год_неделя"] = iso["year"].astype(int) * 100 + iso["week"].astype(int)
     df["аномально"] = df["год_неделя"].map(du.week_is_campaign)
 
-    count_cols = ["событий", "тревог", "неисправностей", "шума"]
+    count_cols = ["событий", "тревог", "неисправностей", "шума"] + list(extra_cols)
     df = _add_bucket_windows(df, count_cols, windows=BUCKET_WINDOWS)
+    for name in extra_cols:
+        df[f"_{name}_act"] = (df[name].to_numpy() > 0).astype(np.int8)
 
     clean = df[~df["аномально"]]
     med = clean.groupby("ид_канала_данных")["событий"].median()
@@ -674,20 +741,26 @@ def make_subdaily_panel(
     # Бакетный контекст объекта: агрегация ВСЕХ каналов объекта за ТОТ ЖЕ
     # 6-часовой бакет и его календарные окна. Без утечки: учитывается только
     # прошлое и текущий интервал, а не будущее в пределах дня.
-    count_cols_ob = ["событий_об_б", "тревог_об_б", "неисправностей_об_б",
-                     "шума_об_б", "каналов_активных_об_б"]
-    obj_blk = df.groupby(["ид_объект", "бакет"], sort=False).agg(
-        событий_об_б=("событий", "sum"),
-        тревог_об_б=("тревог", "sum"),
-        неисправностей_об_б=("неисправностей", "sum"),
-        шума_об_б=("шума", "sum"),
-        каналов_активных_об_б=("ид_канала_данных", "nunique"),
-    ).reset_index()
+    count_cols_ob = [f"{c}_об_б" for c in count_cols] + ["каналов_активных_об_б"]
+    for name in extra_cols:
+        if extra_cols[name].get("count_channels"):
+            count_cols_ob.append(f"каналов_{name}_об_б")
+    obj_agg: dict = {
+        f"{c}_об_б": (c, "sum") for c in count_cols
+    }
+    obj_agg["каналов_активных_об_б"] = ("ид_канала_данных", "nunique")
+    for name in extra_cols:
+        if extra_cols[name].get("count_channels"):
+            obj_agg[f"каналов_{name}_об_б"] = (f"_{name}_act", "sum")
+    obj_blk = df.groupby(["ид_объект", "бакет"], sort=False).agg(**obj_agg).reset_index()
     obj_blk = _add_bucket_windows(obj_blk, count_cols_ob, windows=BUCKET_WINDOWS,
                                   group_col="ид_объект")
     df = df.merge(obj_blk, on=["ид_объект", "бакет"], how="left")
     ob_num = [c for c in obj_blk.columns if c not in ("ид_объект", "бакет")]
     df[ob_num] = df[ob_num].fillna(0)
+    _act_drop = [f"_{name}_act" for name in extra_cols]
+    if _act_drop:
+        df = df.drop(columns=_act_drop)
 
     df = df.sort_values(["ид_канала_данных", "бакет"]).reset_index(drop=True)
     df.to_csv(out_csv, index=False, encoding="utf-8-sig")

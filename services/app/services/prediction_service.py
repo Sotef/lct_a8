@@ -1,0 +1,365 @@
+# -*- coding: utf-8 -*-
+"""Оркестрация: данные -> панель -> субъекты -> инференс -> прогнозы в БД.
+
+Фоновый воркер (workers/scheduler) вызывает compute_and_store_bucket() каждые 6ч;
+ручной запуск — POST /admin/data/load.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import json
+
+import numpy as np
+import pandas as pd
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
+from .. import task_cfg
+from .. import models_db as dbm
+from ..adapters.journal import bucket_to_timestamp
+from . import feature_pipeline as fp
+from . import inference as inf
+from . import ml_registry
+
+
+def _bucket_ts(bucket: int) -> dt.datetime:
+    ts = pd.Timestamp(bucket_to_timestamp(bucket))
+    return ts.to_pydatetime()
+
+
+def _f(v):
+    try:
+        f = float(v)
+        return None if np.isnan(f) else round(f, 6)
+    except (TypeError, ValueError):
+        return None
+
+
+def features_slice(subject_row: pd.Series, task: str) -> dict:
+    """JSON-срез фич канала (карточка «факторы», без служебных колонок)."""
+    cols = ml_registry.get(task)["feature_cols"]
+    data = {}
+    for c in cols:
+        v = subject_row.get(c)
+        if v is None:
+            data[c] = None
+        elif isinstance(v, (np.floating, float)):
+            data[c] = None if (isinstance(v, float) and np.isnan(v)) else round(float(v), 5)
+        elif isinstance(v, (np.integer, int)):
+            data[c] = int(v)
+        else:
+            data[c] = None if pd.isna(v) else float(v)
+    return data
+def compute_and_store_bucket(task: str, bucket: int, db: Session,
+                             model_holder: dict,
+                             recompute_panel: bool = False,
+                             subjects: pd.DataFrame | None = None,
+                             with_factors: bool = True) -> dict:
+    """Прогноз для ВСЕХ активных каналов задачи на заданном бакете + запись в БД.
+
+    Идемпотентно: старые прогнозы на бакет удаляются, записываются свежие.
+    `subjects` — готовые субъекты (одна сборка на много бакетов, см. run_replay).
+    `with_factors=False` — экономит SHAP (массовый пересчёт истории).
+    """
+    if subjects is None:
+        subjects = fp.build_subjects(task, recompute_panel=recompute_panel)
+    bucket_rows = fp.subjects_for_bucket(subjects, bucket)
+    if not len(bucket_rows):
+        return {"task": task, "bucket": bucket,
+                "bucket_ts": str(_bucket_ts(bucket)),
+                "n_subjects": 0, "n_stored": 0}
+
+    version = (model_holder.get(task) or {}).get("model_version", "unknown")
+
+    db.query(dbm.Prediction).filter(
+        dbm.Prediction.task == task,
+        dbm.Prediction.bucket_ts == _bucket_ts(bucket)).delete()
+    # ВАЖНО: коммит сразу — иначе write-lock SQLite держится весь долгий
+    # инференс и параллельные записи (audit_log при логине и т.п.) падают
+    # с "database is locked".
+    db.commit()
+
+    rb = inf.rbam_frame(task, bucket_rows)
+    S = inf.predict_survival_curve(task, bucket_rows)
+    surv_pts = inf.surv_points_from(S)
+    # P(событие ≤ 72ч) = 1 - S(12-й 6ч-бакет); выровнено с bucket_rows (до сортировки)
+    p72_all = (1.0 - S[:, 11]) if (S.ndim == 2 and S.shape[1] > 11) else None
+
+    # SHAP: только топ-400 по score (карточки выше списка всегда с факторами,
+    # массовый пересчёт истории не деградирует по времени)
+    shap_map: dict = {}
+    if with_factors and len(rb):
+        top_orig = [int(x) for x in list(rb.index[:400])]
+        shap_list = shap_factors_batch(task, bucket_rows.iloc[top_orig])
+        shap_map = dict(zip(top_orig, shap_list))
+
+    rows = []
+    for i, (_, row) in enumerate(rb.iterrows()):
+        # rb отсортирован по score; orig — позиция строки в bucket_rows (subjects),
+        # чтобы surv_points/features/факторы соответствовали своему каналу.
+        orig = int(rb.index[i])
+        subj = bucket_rows.iloc[orig]
+        rows.append(dbm.Prediction(
+            task=task,
+            channel_id=str(row["ид_канала_данных"]),
+            object_id=str(row["ид_объект"]),
+            bucket_ts=_bucket_ts(bucket),
+            p24=_f(row["p24"]),
+            p72=_f(p72_all[orig]) if p72_all is not None else None,
+            risk30=_f(row["risk30"]),
+            risk30_cal=_f(row["risk30_cal"]),
+            exp_days=_f(row["exp_days"]),
+            score=_f(row["score"]),
+            severity=_f(row["severity"]),
+            scale=_f(row["scale"]),
+            plan=str(row["plan"]),
+            surv_points=surv_pts[orig] if surv_pts else None,
+            factors=shap_map.get(orig),
+            features_json=features_slice(subj, task),
+            event_flag=int(row["event_flag"]) if not pd.isna(row["event_flag"]) else 0,
+            obs_days=_f(row["obs_days"]),
+            model_version=version,
+        ))
+    db.add_all(rows)
+    db.commit()
+    return {"task": task, "bucket": bucket,
+            "bucket_ts": str(_bucket_ts(bucket)),
+            "n_subjects": int(len(bucket_rows)),
+            "n_stored": len(rows)}
+
+
+def shap_factors_batch(task: str, subjects: pd.DataFrame,
+                       top_k: int = 8) -> list[list[dict]]:
+    """Топ-фичи «почему» (SHAP через CatBoost ShapValues), батчем по всем субъектам."""
+    from ..research_bridge import module as _m
+    tte = _m("tte_pipeline")
+    entry = ml_registry.get(task)
+    X_cols = entry["feature_cols"]
+    names = list(X_cols)
+    if len(subjects) == 0:
+        return []
+    X_pt, _ = tte.expand_person_time(subjects, X_cols, tte.HORIZON_BUCKETS,
+                                     fixed_horizon=True)
+    pool = _m("catboost").Pool(X_pt)
+    try:
+        shap = np.asarray(entry["model"].get_feature_importance(pool, type="ShapValues"))
+        out = []
+        for row in shap:
+            pairs = sorted(zip(names, row[:len(names)]), key=lambda t: -abs(t[1]))
+            out.append([{"feature": n, "shap": round(float(v), 5)}
+                        for n, v in pairs[:top_k]])
+        return out
+    except Exception:  # noqa: BLE001
+        out = []
+        for _ in range(len(subjects)):
+            out.append([{"feature": c, "shap": None} for c in names[:top_k]])
+        return out
+def _pred_to_item(p: dbm.Prediction, sensor_type=None, sensor_name=None,
+                  obj=None, tag=None, system_type=None):
+    return {
+        "id": p.id,
+        "ид_канала_данных": p.channel_id,
+        "object_id": p.object_id,
+        "название_объекта": getattr(obj, "name", None),
+        "тип_объекта": getattr(obj, "object_type", None),
+        "район": getattr(obj, "district", None),
+        "бакет": int(p.bucket_ts.timestamp() // (6 * 3600)) if p.bucket_ts else None,
+        "bucket_ts": p.bucket_ts.isoformat() if p.bucket_ts else None,
+        "дата": str(p.bucket_ts.date()) if p.bucket_ts else None,
+        "тип_датчика": sensor_type,
+        "название_датчика": sensor_name,
+        "тег_инж_системы": tag,
+        "инж_система": system_type,
+        "severity": p.severity,
+        "scale": p.scale,
+        "p24": p.p24,
+        "p72": p.p72,
+        "risk30": p.risk30,
+        "risk30_cal": p.risk30_cal,
+        "risk_used": p.risk30_cal if p.risk30_cal is not None else p.risk30,
+        "exp_days": p.exp_days,
+        "score": p.score,
+        "plan": p.plan,
+        "event_flag": p.event_flag,
+        "obs_days": p.obs_days,
+    }
+
+
+def latest_bucket_ts(db: Session, task: str):
+    """Максимальный bucket_ts хранимых прогнозов задачи (datetime | None)."""
+    return db.query(func.max(dbm.Prediction.bucket_ts)).filter(
+        dbm.Prediction.task == task).scalar()
+
+
+def top_risks(task: str, k: int = 200, active_only: bool = False,
+              db: Session = None, bucket: int | None = None,
+              object_ids: list[str] | None = None,
+              horizon: str = "30d") -> dict:
+    """Топ-K RBAM из хранимых прогнозов.
+
+    bucket=None -> актуальный (максимальный) бакет прогнозов задачи.
+    horizon: 24h | 72h | 30d — сортировка по вероятности события на горизонте.
+    """
+    if bucket is None:
+        last_ts = latest_bucket_ts(db, task)
+    q = db.query(dbm.Prediction, dbm.ChannelRef.sensor_type,
+                 dbm.ChannelRef.sensor_name, dbm.ChannelRef.tag,
+                 dbm.ChannelRef.system_type, dbm.ObjectRef) \
+        .outerjoin(dbm.ChannelRef,
+                   dbm.ChannelRef.channel_id == dbm.Prediction.channel_id) \
+        .outerjoin(dbm.ObjectRef,
+                   dbm.ObjectRef.object_id == dbm.Prediction.object_id) \
+        .filter(dbm.Prediction.task == task)
+    if bucket is not None:
+        q = q.filter(dbm.Prediction.bucket_ts == _bucket_ts(bucket))
+    elif last_ts is not None:
+        q = q.filter(dbm.Prediction.bucket_ts == last_ts)
+    if object_ids is not None:
+        q = q.filter(dbm.Prediction.object_id.in_(object_ids))
+    if active_only:
+        q = q.filter(dbm.Prediction.event_flag == 1)
+    # сортировка под горизонт: 24ч/72ч — короткие горизонты (оперативная очередь),
+    # 30d — RBAM-скор (планирование ТО)
+    order_col = {"24h": dbm.Prediction.p24,
+                 "72h": dbm.Prediction.p72}.get(horizon, dbm.Prediction.score)
+    q = q.order_by(order_col.desc().nulls_last()).limit(min(k, 1000))
+    fetched = q.all()
+    items = [_pred_to_item(p, st, sn, obj=obj, tag=tg, system_type=sy)
+             for p, st, sn, tg, sy, obj in fetched]
+    sort_key = {"24h": lambda it: (it.get("p24") or 0.0),
+                "72h": lambda it: (it.get("p72") or 0.0)}.get(
+        horizon, lambda it: (it.get("score") or 0.0))
+    items.sort(key=lambda it: -sort_key(it))
+    return {"task": task, "horizon": horizon,
+            "k": len(items[:k]), "items": items[:k]}
+
+
+def forecasts_list(task: str, object_id: str | None = None,
+                   status: str | None = None, page: int = 1, size: int = 50,
+                   bucket: int | None = None, db: Session = None,
+                   object_ids: list[str] | None = None,
+                   horizon: str = "30d") -> dict:
+    q = db.query(dbm.Prediction).filter(dbm.Prediction.task == task)
+    if object_id:
+        q = q.filter(dbm.Prediction.object_id == object_id)
+    if object_ids is not None:
+        q = q.filter(dbm.Prediction.object_id.in_(object_ids))
+    if status:
+        q = q.filter(dbm.Prediction.plan == status)
+    if bucket is not None:
+        q = q.filter(dbm.Prediction.bucket_ts == _bucket_ts(bucket))
+    total = q.count()
+    qj = (q.join(dbm.ChannelRef,
+                 dbm.ChannelRef.channel_id == dbm.Prediction.channel_id,
+                 isouter=True)
+          .join(dbm.ObjectRef,
+                dbm.ObjectRef.object_id == dbm.Prediction.object_id,
+                isouter=True)
+          .add_columns(dbm.ChannelRef.sensor_type,
+                       dbm.ChannelRef.sensor_name,
+                       dbm.ChannelRef.tag,
+                       dbm.ChannelRef.system_type, dbm.ObjectRef))
+    order_col = {"24h": dbm.Prediction.p24,
+                 "72h": dbm.Prediction.p72}.get(horizon, dbm.Prediction.score)
+    qj = (qj.order_by(order_col.desc().nulls_last())
+          .offset((page - 1) * size).limit(size))
+    items = [_pred_to_item(p, st, sn, obj=obj, tag=tg, system_type=sy)
+             for p, st, sn, tg, sy, obj in qj.all()]
+    sort_key = {"24h": lambda it: (it.get("p24") or 0.0),
+                "72h": lambda it: (it.get("p72") or 0.0)}.get(
+        horizon, lambda it: (it.get("score") or 0.0))
+    items.sort(key=lambda it: -sort_key(it))
+    return {"task": task, "horizon": horizon, "page": page, "size": size,
+            "total": total, "items": items}
+
+
+def top_objects(task: str, db: Session, k: int = 50, horizon: str = "72h",
+                bucket: int | None = None,
+                object_ids: list[str] | None = None) -> dict:
+    """Топ-K объектов по вкладу: Σ (severity_канала × P(событие ≤ горизонт)).
+
+    horizon: 24h -> p24, 72h -> p72, 30d -> risk30_cal/risk30.
+    У каждого объекта — топ-3 канала с максимальным вкладом.
+    """
+    if bucket is None:
+        last_ts = latest_bucket_ts(db, task)
+        if last_ts is None:
+            return {"task": task, "horizon": horizon, "items": []}
+    pcol = {"24h": dbm.Prediction.p24,
+            "72h": dbm.Prediction.p72}.get(horizon, dbm.Prediction.risk30)
+    q = (db.query(dbm.Prediction, dbm.ObjectRef)
+         .outerjoin(dbm.ObjectRef,
+                    dbm.ObjectRef.object_id == dbm.Prediction.object_id)
+         .filter(dbm.Prediction.task == task))
+    if bucket is not None:
+        q = q.filter(dbm.Prediction.bucket_ts == _bucket_ts(bucket))
+    else:
+        q = q.filter(dbm.Prediction.bucket_ts == last_ts)
+    if object_ids is not None:
+        q = q.filter(dbm.Prediction.object_id.in_(object_ids))
+    agg: dict = {}
+    for p, obj in q.all():
+        ph = getattr(p, {"24h": "p24", "72h": "p72"}.get(horizon, "risk30")) \
+            if horizon != "30d" else (p.risk30_cal if p.risk30_cal is not None else p.risk30)
+        if ph is None:
+            continue
+        sev = p.severity if p.severity is not None else 0.5
+        contrib = float(ph) * float(sev)
+        a = agg.setdefault(p.object_id, {
+            "object_id": p.object_id,
+            "название_объекта": getattr(obj, "name", None),
+            "тип_объекта": getattr(obj, "object_type", None),
+            "район": getattr(obj, "district", None),
+            "каналов": 0, "вклад": 0.0, "риск_макс": 0.0, "top_channels": [],
+        })
+        a["каналов"] += 1
+        a["вклад"] += contrib
+        a["риск_макс"] = max(a["риск_макс"], float(ph))
+        a["top_channels"].append({
+            "prediction_id": p.id, "channel_id": p.channel_id,
+            "p_horizon": round(float(ph), 4),
+            "severity": round(float(sev), 3),
+            "вклад": round(contrib, 4)})
+    items = sorted(agg.values(), key=lambda a: -a["вклад"])[:k]
+    for a in items:
+        a["вклад"] = round(a["вклад"], 4)
+        a["top_channels"] = sorted(a["top_channels"],
+                                   key=lambda ch: -ch["вклад"])[:3]
+    return {"task": task, "horizon": horizon, "k": len(items), "items": items}
+
+
+def maintenance_plan(task: str, db: Session,
+                     bucket: int | None = None,
+                     object_ids: list[str] | None = None) -> dict:
+    """Агрегат «план ТО x тип канала» из прогнозов (bucket=None — актуальный)."""
+    import statistics
+    q = db.query(dbm.Prediction, dbm.ChannelRef.sensor_type) \
+        .outerjoin(dbm.ChannelRef,
+                   dbm.ChannelRef.channel_id == dbm.Prediction.channel_id) \
+        .filter(dbm.Prediction.task == task)
+    if object_ids is not None:
+        q = q.filter(dbm.Prediction.object_id.in_(object_ids))
+    if bucket is not None:
+        q = q.filter(dbm.Prediction.bucket_ts == _bucket_ts(bucket))
+    else:
+        last_ts = latest_bucket_ts(db, task)
+        if last_ts is not None:
+            q = q.filter(dbm.Prediction.bucket_ts == last_ts)
+    fetched = q.all()
+    if not fetched:
+        return {"task": task, "rows": []}
+    agg: dict = {}
+    for p, stype in fetched:
+        key = (p.plan or "плановый", stype or "прочее")
+        a = agg.setdefault(key, [0, 0.0, 0.0, []])
+        a[0] += 1
+        a[1] += (p.risk30_cal if p.risk30_cal is not None else p.risk30) or 0.0
+        a[2] += p.score or 0.0
+        a[3].append(p.exp_days or 0.0)
+    rows = []
+    for (plan, typ), (n, risk_sum, score_sum, exps) in sorted(agg.items()):
+        rows.append({"plan": plan, "тип_датчика": typ, "каналов": n,
+                     "риск_средний": round(risk_sum / n, 4),
+                     "score_сумма": round(score_sum, 4),
+                     "exp_days_медиана": round(statistics.median(exps), 4)})
+    return {"task": task, "rows": rows}

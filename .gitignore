@@ -9,6 +9,7 @@ dist/
 # Virtual environments
 .venv/
 venv/
+.venv-mcp/
 
 # Jupyter
 .ipynb_checkpoints/
@@ -30,8 +31,17 @@ research/dataset/
 research/models/
 research/parquet/
 
+# Services: runtime-heavy кэши (сырые бакеты, панели, SQLite)
+services/data/raw/
+services/data/panels/
+services/data/*.db
+services/data/*.db-*
+services/.venv/
+services/*.log
+
 # IDE / OS
 .vscode/
+.mcp.json
 .idea/
 .DS_Store
 Thumbs.db

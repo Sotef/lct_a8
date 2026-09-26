@@ -1,0 +1,98 @@
+/* ================== ТЕМА 1: OBSIDIAN — тёмный глассморфизм ================== */
+/* Референс: recent.design / award-winning dark dashboards.                    */
+[data-theme="obsidian"] {
+  --bg: #0a0b10;
+  --bg-2: #10121a;
+  --panel: rgba(255,255,255,.045);
+  --panel-solid: #14161f;
+  --border: rgba(255,255,255,.09);
+  --border-strong: rgba(255,255,255,.18);
+  --text: #eef0f6;
+  --text-dim: #9aa1b5;
+  --text-faint: #6b7285;
+  --accent: #8b5cf6;
+  --accent-2: #22d3ee;
+  --grad: linear-gradient(135deg, #8b5cf6 0%, #22d3ee 100%);
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --bad: #f87171;
+  --bad-2: #fb7185;
+  --shadow: 0 18px 50px rgba(0,0,0,.5);
+  --radius: 18px;
+  --radius-s: 12px;
+  --font: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-display: var(--font);
+  --font-mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  --head-caps: none;
+  --card-glow: 0 0 0 1px var(--border), var(--shadow);
+  --backdrop: radial-gradient(1200px 800px at 80% -10%, rgba(139,92,246,.14), transparent 60%),
+              radial-gradient(1000px 700px at -10% 110%, rgba(34,211,238,.10), transparent 60%),
+              var(--bg);
+}
+[data-theme="obsidian"] body { background: var(--backdrop); }
+
+/* ================== ТЕМА 2: EDITORIAL — светлый журнальный ================== */
+/* Референс: awwwards editorial sites. Тонкие линейки, серифы, бумага.        */
+[data-theme="editorial"] {
+  --bg: #faf8f4;
+  --bg-2: #f1ede5;
+  --panel: #ffffff;
+  --panel-solid: #ffffff;
+  --border: #e3ddd1;
+  --border-strong: #c9c2b2;
+  --text: #17150f;
+  --text-dim: #6d675a;
+  --text-faint: #a29b8c;
+  --accent: #b91c1c;
+  --accent-2: #1d4ed8;
+  --grad: linear-gradient(135deg, #b91c1c 0%, #7c2d12 100%);
+  --ok: #15803d;
+  --warn: #b45309;
+  --bad: #b91c1c;
+  --bad-2: #991b1b;
+  --shadow: 0 10px 30px rgba(23,21,15,.08);
+  --radius: 4px;
+  --radius-s: 3px;
+  --font: "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-display: Georgia, "Times New Roman", serif;
+  --font-mono: Consolas, monospace;
+  --head-caps: none;
+  --card-glow: 0 1px 0 var(--border), var(--shadow);
+  --backdrop: var(--bg);
+}
+[data-theme="editorial"] body { background: var(--backdrop); }
+
+/* ================== ТЕМА 3: TERMINAL — пульт диспетчера ==================== */
+/* Фосфорный моно-консоль: плотно, моноширинно, uppercase, сканлайны.        */
+[data-theme="terminal"] {
+  --bg: #050807;
+  --bg-2: #0a120c;
+  --panel: rgba(22,255,138,.04);
+  --panel-solid: #0b120d;
+  --border: rgba(22,255,138,.22);
+  --border-strong: rgba(22,255,138,.45);
+  --text: #d8ffe9;
+  --text-dim: #6fae8a;
+  --text-faint: #3f6b52;
+  --accent: #16ff8a;
+  --accent-2: #7dd3fc;
+  --grad: linear-gradient(135deg, #16ff8a 0%, #0d9d63 100%);
+  --ok: #16ff8a;
+  --warn: #ffd23f;
+  --bad: #ff5d5d;
+  --bad-2: #ff8a5d;
+  --shadow: 0 0 0 1px var(--border);
+  --radius: 2px;
+  --radius-s: 2px;
+  --font: "Cascadia Mono", Consolas, "Courier New", monospace;
+  --font-display: var(--font);
+  --font-mono: var(--font);
+  --head-caps: uppercase;
+  --card-glow: 0 0 0 1px var(--border);
+  --backdrop:
+    repeating-linear-gradient(0deg, rgba(0,0,0,.22) 0 1px, transparent 1px 3px),
+    radial-gradient(900px 600px at 50% 0%, rgba(22,255,138,.06), transparent 70%),
+    var(--bg);
+}
+[data-theme="terminal"] body { background: var(--backdrop); }
+[data-theme="terminal"] * { letter-spacing: .02em; }

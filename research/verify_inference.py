@@ -70,7 +70,7 @@ def check_task(task: str, n_samples: int = 5) -> list[str]:
     S = tte_predict_check(m, holdout.head(5), X_cols)
     mono = bool(np.all(np.diff(S, axis=1) <= 1e-9))
     lines.append(f"[3] S(t) из модели: shape={S.shape}, [0,1]="
-                 f"{(S >= 0).all() and (S <= 1).all()}, мононноть="
+                 f"{(S >= 0).all() and (S <= 1).all()}, монотонность="
                  f"{mono}")
 
     # 4. совпадение с исходной панелью

@@ -1,0 +1,49 @@
+# Предиктивный сервис АО «Москоллектор» — PostgreSQL 12+ + API (Docker)
+#
+# Запуск PostgreSQL:
+#   docker compose up -d postgres
+#   docker compose run --rm api python scripts/seed.py
+#   docker compose up -d api
+# Сервис должен видеть папку research (модели/справочники) — см. RESEARCH_DIR/.env
+#
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:14-alpine
+    environment:
+      POSTGRES_USER: moscollector
+      POSTGRES_PASSWORD: change-me
+      POSTGRES_DB: moscollector
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U moscollector"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql://moscollector:change-me@postgres:5432/moscollector
+      RESEARCH_DIR: /workspace/research
+      JWT_SECRET: change-me-in-production
+    volumes:
+      - ../research:/workspace/research:ro
+      - ./data:/workspace/services/data
+    ports:
+      - "8000:8000"
+    command: >
+      sh -c "python scripts/seed.py &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
