@@ -82,7 +82,7 @@ research\.venv\Scripts\python.exe -m jupyter lab
 - `research/docs/OPEN_QUESTIONS.md` — вопросы организаторам и ответы экспертов.
 - `research/docs/DATA_REPORT.md` — отчёт по данным (EDA, недельный анализ, кампании).
 - `research/docs/PLAN_LAYER2_TTE.md` — план/статус улучшения прогноза «через сколько дней» (слой 2, ноутбук 11).
-- `research/docs/PLAN_OTHER_TASKS.md` — план/статус задач fire/sensor/access (в т.ч. итоги P0 в §21, 20.09.2026).
+- `research/docs/PLAN_OTHER_TASKS.md` — план/статус задач fire/sensor/access + wear (хронология и итоги P0/P1).
 - `research/docs/MVP_PIVOT.md` — ядро MVP в канве индустриальных стандартов (CBM/RBAM/RUL) + резервный сценарий «буква ТЗ» (20.09.2026).
 - `research/docs/SEVERITY_MAP.md` — веса последствий для RBAM-приоритета (эвристика, заменится реестром).
 - `research/docs/RISK_PIVOT_REPORT.md` — риск-портфель RBAM и план ТО (генерируется notebook 30).
@@ -104,7 +104,7 @@ research\.venv\Scripts\python.exe -m jupyter lab
 - [x] Feature pipeline: `features.py` (признаки каналов/объектов, горизонты 6–48ч)
 - [x] Basline и горизонты: ноутбуки `08_wear_baseline`, `09_wear_horizons`, `10_wear_series` (событие = старт серии)
 - [x] Слой 2 «через сколько дней»: survival-апгрейд `11_wear_tte` (discrete hazard, цензура, holdout 2025H2+2026)
-- [x] Задачи fire/sensor/access + wear на дефолтах: итоги P0 — `research/docs/PLAN_OTHER_TASKS.md` §21 (notebooks 27/28/29)
+- [x] Задачи fire/sensor/access + wear на дефолтах: итоги P0/P1 — `research/docs/PLAN_OTHER_TASKS.md` (notebooks 27/28/29)
 - [x] Risk-портфель RBAM (ядро MVP) + fallback «буква ТЗ»: `MVP_PIVOT.md`, `RISK_PIVOT_REPORT.md`, `TZ_COMPLIANCE_REPORT.md`
 - [x] Инференс-контракт для backend: `inference_contract.py` (модель + калибровка + top-K + план ТО)
 - [x] Календарь плановых ТО/ППР заказчика (2026): `planned_work.py`, `notebooks/33_planned_work_2026.ipynb`
