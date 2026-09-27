@@ -31,6 +31,9 @@ research/dataset/
 research/models/
 research/parquet/
 
+# CatBoost training telemetry (auto-generated, regenerable)
+catboost_info/
+
 # Services: runtime-heavy кэши (сырые бакеты, панели, SQLite)
 services/data/raw/
 services/data/panels/
