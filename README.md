@@ -13,7 +13,6 @@ lct_a8/
 │   │                    #   _external/ (кэш внешних выгрузок: maintenance_plan)
 │   ├── notebooks/       # 00..07 (данные/EDA), 08..12 (wear/TTE), 19..33 (fire/sensor/access,
 │   │                    #   калибровка, RBAM/L2, интеграция, плановые ТО/ППР)
-│   ├── nb_build/        # текстовые исходники ноутбуков (+ build.py)
 │   ├── docs/            # DATA_REPORT, ML_PLAN, DATA_MATRIX, OPEN_QUESTIONS, MVP_PIVOT,
 │   │                    #   RISK_PIVOT_REPORT, TZ_COMPLIANCE_REPORT, API_CONTRACT, ADAPTERS_README
 │   ├── models/          # обученные модели (.cbm), holdout-предсказания, отчёты
@@ -98,7 +97,7 @@ research\.venv\Scripts\python.exe -m jupyter lab
 - [x] Окружение: два venv Python 3.12, ядро Jupyter
 - [x] Распаковка всех `.7z`
 - [x] EDA: объёмы, схема, тревоги по типам, словарь статусов, структура тегов
-- [x] EDA в Jupyter: ноутбуки `research/notebooks/01..06` + исходники `nb_build/src`
+- [x] EDA в Jupyter: ноутбуки `research/notebooks/01..07`
 - [x] Подготовка данных: пайплайн `00_data_pipeline` + ноутбук `07_data_prep` (панели, нейтрализация кампаний)
 - [x] Календарь кампаний проверок (`data_utils.CAMPAIGN_WEEKS`)
 - [x] Feature pipeline: `features.py` (признаки каналов/объектов, горизонты 6–48ч)
