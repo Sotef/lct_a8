@@ -7,14 +7,15 @@
 ```
 lct_a8/
 ├── STATUS.md            # сводка готовности (метрики, компоненты, блокеры)
+├── ARCHITECTURE.md      # архитектура и использование (research + сервис)
 ├── research/            # ML Research Team: EDA, feature pipeline, модели, Jupyter
 │   ├── .venv/           # venv Python 3.12 (ядро Jupyter: lct-a8-research)
 │   ├── dataset/         # исходные .7z, распакованные CSV (extracted/), панели, справочники,
 │   │                    #   _external/ (кэш внешних выгрузок: maintenance_plan)
 │   ├── notebooks/       # 00..07 (данные/EDA), 08..12 (wear/TTE), 19..33 (fire/sensor/access,
 │   │                    #   калибровка, RBAM/L2, интеграция, плановые ТО/ППР)
-│   ├── docs/            # DATA_REPORT, ML_PLAN, DATA_MATRIX, OPEN_QUESTIONS, MVP_PIVOT,
-│   │                    #   RISK_PIVOT_REPORT, TZ_COMPLIANCE_REPORT, API_CONTRACT, ADAPTERS_README
+│   ├── docs/            # ML_PLAN (архитектура+статус), BACKLOG, DATA_REPORT, DATA_MATRIX,
+│   │                    #   OPEN_QUESTIONS, RISK_PIVOT_REPORT, TZ_COMPLIANCE_REPORT, API_CONTRACT, ADAPTERS_README
 │   ├── models/          # обученные модели (.cbm), holdout-предсказания, отчёты
 │   ├── data_utils.py    # чтение журналов, календарь кампаний
 │   ├── features.py      # feature pipeline: панели (суточные/6ч), признаки, цели
@@ -76,19 +77,18 @@ research\.venv\Scripts\python.exe -m jupyter lab
 
 ## Документы ML-команды
 
-- `research/docs/ML_PLAN.md` — план ML (раздел 0 — итоги встречи с экспертами 16.09).
+- `ARCHITECTURE.md` — архитектура и использование (research + сервис), карта API.
+- `research/docs/ML_PLAN.md` — единый ML-документ: архитектура/план (Часть I) + статус задач fire/sensor/access/wear (Часть II) + продуктовая рамка MVP (Часть III).
+- `research/docs/BACKLOG.md` — нереализованное/отложенное и блокеры данных.
 - `research/docs/DATA_MATRIX.md` — матрица «задача → данные → связи (joins)».
 - `research/docs/OPEN_QUESTIONS.md` — вопросы организаторам и ответы экспертов.
 - `research/docs/DATA_REPORT.md` — отчёт по данным (EDA, недельный анализ, кампании).
-- `research/docs/PLAN_LAYER2_TTE.md` — план/статус улучшения прогноза «через сколько дней» (слой 2, ноутбук 11).
-- `research/docs/PLAN_OTHER_TASKS.md` — план/статус задач fire/sensor/access + wear (хронология и итоги P0/P1).
-- `research/docs/MVP_PIVOT.md` — ядро MVP в канве индустриальных стандартов (CBM/RBAM/RUL) + резервный сценарий «буква ТЗ» (20.09.2026).
-- `research/docs/SEVERITY_MAP.md` — веса последствий для RBAM-приоритета (эвристика, заменится реестром).
-- `research/docs/RISK_PIVOT_REPORT.md` — риск-портфель RBAM и план ТО (генерируется notebook 30).
-- `research/docs/API_CONTRACT.md` — API-контракт ядра MVP для backend-команды (top-risks / maintenance-plan / forecasts / decision).
-- `research/docs/TZ_COMPLIANCE_REPORT.md` — fallback-отчёт «буква ТЗ» (генерируется `research/report_tz_compliance.py`).
-- `research/docs/ADAPTERS_README.md` — интерфейсы адаптеров внешних данных (АРМ/ОДС/СКУД/реестр, P2).
-- `research/docs/REPRODUCE_DATASETS.md` — как из `.7z` пересобрать все датасеты (`rebuild_all_datasets.py`).
+- `research/docs/SEVERITY_MAP.md` — веса последствий для RBAM-приоритета.
+- `research/docs/RISK_PIVOT_REPORT.md` — риск-портфель RBAM и план ТО (nb 30).
+- `research/docs/API_CONTRACT.md` — API-контракт ядра MVP для backend.
+- `research/docs/TZ_COMPLIANCE_REPORT.md` — отчёт «буква ТЗ» (генерируется `report_tz_compliance.py`).
+- `research/docs/ADAPTERS_README.md` — интерфейсы адаптеров внешних данных (P2).
+- `research/docs/REPRODUCE_DATASETS.md` — как из `.7z` пересобрать все датасеты.
 
 ## Текущий статус
 
@@ -103,8 +103,8 @@ research\.venv\Scripts\python.exe -m jupyter lab
 - [x] Feature pipeline: `features.py` (признаки каналов/объектов, горизонты 6–48ч)
 - [x] Basline и горизонты: ноутбуки `08_wear_baseline`, `09_wear_horizons`, `10_wear_series` (событие = старт серии)
 - [x] Слой 2 «через сколько дней»: survival-апгрейд `11_wear_tte` (discrete hazard, цензура, holdout 2025H2+2026)
-- [x] Задачи fire/sensor/access + wear на дефолтах: итоги P0/P1 — `research/docs/PLAN_OTHER_TASKS.md` (notebooks 27/28/29)
-- [x] Risk-портфель RBAM (ядро MVP) + fallback «буква ТЗ»: `MVP_PIVOT.md`, `RISK_PIVOT_REPORT.md`, `TZ_COMPLIANCE_REPORT.md`
+- [x] Задачи fire/sensor/access + wear на дефолтах: итоги P0/P1 — `research/docs/ML_PLAN.md (Часть II)` (notebooks 27/28/29)
+- [x] Risk-портфель RBAM (ядро MVP) + fallback «буква ТЗ»: `ML_PLAN.md (Часть III)`, `RISK_PIVOT_REPORT.md`, `TZ_COMPLIANCE_REPORT.md`
 - [x] Инференс-контракт для backend: `inference_contract.py` (модель + калибровка + top-K + план ТО)
 - [x] Календарь плановых ТО/ППР заказчика (2026): `planned_work.py`, `notebooks/33_planned_work_2026.ipynb`
 - [x] **FastAPI-сервис, БД, frontend, JWT/RBAC, audit, реплей 2026** (тесты: 19 passed) — см. `services/README.md`

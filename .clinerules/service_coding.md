@@ -68,7 +68,7 @@
 
 # BACKEND SPEC — интеграционная спецификация предиктивного сервиса
 
-Версия: 0.1 · Дата: 20.09.2026 · Backend & Web Service Team · (ядро: MVP_PIVOT.md, API_CONTRACT.md, SERVICE_PLAN.md)
+Версия: 0.1 · Дата: 20.09.2026 · Backend & Web Service Team · (ядро: ML_PLAN.md (Часть III), API_CONTRACT.md, SERVICE_PLAN.md)
 
 > Этот файл — «вход» для backend: куда брать данные, как их превращать в признаки,
 > где модели, какие ручки и какая БД. ML-логика НЕ пишется в эндпоинтах —

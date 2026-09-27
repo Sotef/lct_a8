@@ -29,7 +29,7 @@ End-to-end MVP **собран и рабочий**: research (данные → ф
 Слой «через сколько дней» (survival / discrete hazard): Uno-C 0.72–0.79, `exp_days`, S(t) —
 работают; риск-портфель RBAM (`score = risk30 × severity × scale`), план ТО — сгенерированы.
 
-> Переосмысленное ядро MVP (см. `research/docs/MVP_PIVOT.md`): отвечаем не «что сломается
+> Переосмысленное ядро MVP (см. `research/docs/ML_PLAN.md (Часть III)`): отвечаем не «что сломается
 > через 24ч», а «где риск сейчас и что в план ТО» (CBM + RBAM + RUL). «Буква ТЗ» —
 > fallback-сценарий (`research/docs/TZ_COMPLIANCE_REPORT.md`).
 
@@ -75,7 +75,9 @@ End-to-end MVP **собран и рабочий**: research (данные → ф
 | Финальные метрики | `research/dataset/final_metrics_v0.csv` |
 | Риск-портфель RBAM | `research/docs/RISK_PIVOT_REPORT.md` |
 | Соответствие «букве ТЗ» | `research/docs/TZ_COMPLIANCE_REPORT.md` |
-| Планы/статусы ML | `research/docs/ML_PLAN.md`, `PLAN_OTHER_TASKS.md`, `MVP_PIVOT.md`, `OPEN_QUESTIONS.md` |
+| ML-план/статус/продуктовая рамка | `research/docs/ML_PLAN.md` (Части I–III) |
+| Бэклог (не сделанное/блокеры) | `research/docs/BACKLOG.md`, `research/docs/OPEN_QUESTIONS.md` |
+| Архитектура и использование | `ARCHITECTURE.md` |
 | API-контракт для backend | `research/docs/API_CONTRACT.md`, `services/BACKEND_SPEC.md` |
 | Календарь ТО/ППР заказчика | `research/planned_work.py`, `research/notebooks/33_planned_work_2026.ipynb` |
 
