@@ -16,28 +16,37 @@ venv/
 *.ipynb_checkpoints/
 jupyter_cloud_config.yaml
 
-# Data (raw is large) — keep extracted? adjust as needed
+# Данные СМВУ: тяжёлые выгрузки (~16 ГБ) в git не кладём
 research/dataset/
 *.7z
-
-# При желании коммитить маленькие справочники (раскомментировать):
-# !research/dataset/справочник_каналов_датчиков.csv
-# !research/dataset/справочник_объектов_диспетчер.csv
-# !research/dataset/журнал_событий_пример.csv
+# ...но справочники нужны сервису для bootstrap (objects_ref/channels_ref) — коммитим
+!research/dataset/
+research/dataset/*
+!research/dataset/справочник_каналов_датчиков.csv
+!research/dataset/справочник_объектов_диспетчер.csv
 # Полная пересборка остального: см. research/docs/REPRODUCE_DATASETS.md
 
 # ML artifacts
 *.onnx
 research/models/
 research/parquet/
+# ...кроме обученных моделей: без них сервис стартует, но не делает прогнозы
+!research/models/
+research/models/*
+!research/models/tte_*_discrete_hazard.cbm
+!research/models/calib30_*.pkl
 
 # CatBoost training telemetry (auto-generated, regenerable)
 catboost_info/
 
-# Services: runtime-heavy кэши (сырые бакеты, панели, SQLite)
-services/data/raw/
+# Services: runtime-heavy кэши в git не кладём (панели ~319 МБ, SQLite ~8 ГБ),
+# НО raw-кэш 2026 (1.1 МБ) коммитим: панель 6ч пересобирается из него на первом запуске
 services/data/panels/
 services/data/*.db
+services/data/raw/
+!services/data/raw/
+services/data/raw/*
+!services/data/raw/buckets_2026.parquet
 services/data/*.db-*
 services/.venv/
 services/*.log
