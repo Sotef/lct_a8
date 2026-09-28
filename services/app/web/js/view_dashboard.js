@@ -108,11 +108,20 @@ Views.dashboard = (() => {
       const live = bodyOf();                    // узел мог быть подменён морфингом при перерисовке
       if (!live) return;                        // ушли с раздела — рисовать некуда
       live.innerHTML = "";
-      live.appendChild(Charts.trend(d.rows || [], { showMax, h: 250 }));
-      if ((d.rows || []).length) {
-        live.appendChild(el(`<div class="faint" style="font-size:11.5px;margin-top:2px">
-          ${esc(d.measure_ru || "")} · по 6ч-бакетам, ${d.rows.length} точек</div>`));
-      }
+      const rows = d.rows || [];
+      live.appendChild(Charts.trend(rows, { showMax, h: 250 }));
+      /* Подпись: для полного ряда — выбранный горизонт и число точек; для короткого
+         (сразу после «Заново с января») — понятное объяснение, что происходит и когда
+         ждать данные, иначе кажется, что график «сломался». */
+      const clk = state.clock || {};
+      const simNow = clk.sim_now ? String(clk.sim_now).slice(0, 16).replace("T", " ") : "—";
+      const nextTick = (clk.next_tick_in_sec !== null && clk.next_tick_in_sec !== undefined)
+        ? ` · следующий тик ~${clk.next_tick_in_sec} с` : "";
+      const hint = rows.length >= 2
+        ? `${d.measure_ru || ""} · по 6ч-бакетам, ${rows.length} точек`
+        : `точек пока ${rows.length} — история накапливается по 6ч-бакету за тик (сим-время ${simNow}${nextTick}). `
+          + "После «Заново с января» первый прогноз появляется через ~один тик, кривая растёт дальше сама";
+      live.appendChild(el(`<div class="faint" id="trend-hint" style="font-size:11.5px;margin-top:2px">${esc(hint)}</div>`));
     };
     FX.seg(card.querySelector("#tseg"), b => {
       measure = b.dataset.m; localStorage.setItem("mc_trend_measure", measure); draw();

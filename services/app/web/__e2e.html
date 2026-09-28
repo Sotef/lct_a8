@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>e2e</title>
+<link rel="stylesheet" href="/css/themes.css"><link rel="stylesheet" href="/css/core.css">
+<link rel="stylesheet" href="/css/shell.css"><link rel="stylesheet" href="/css/topbar.css">
+<link rel="stylesheet" href="/css/components.css"><link rel="stylesheet" href="/css/buttons.css">
+<link rel="stylesheet" href="/css/widgets.css"><link rel="stylesheet" href="/css/overlays.css">
+<link rel="stylesheet" href="/css/overlays2.css"><link rel="stylesheet" href="/css/pages.css">
+<link rel="stylesheet" href="/css/pages2.css"><link rel="stylesheet" href="/css/anim.css">
+<link rel="stylesheet" href="/css/mobile.css">
+</head>
+<body data-theme="obsidian">
+<div id="app"></div>
+<pre id="probe-out" style="position:fixed;left:0;bottom:0;z-index:9999;font:10px monospace;background:#000;color:#0f0;
+  max-height:44vh;overflow:auto;margin:0;padding:4px;white-space:pre-wrap"></pre>
+<script src="/js/icons.js"></script><script src="/js/ui.js"></script><script src="/js/bgfx.js"></script>
+<script src="/js/fx.js"></script><script src="/js/mobile/offline.js"></script><script src="/js/api.js"></script>
+<script src="/js/mobile/push.js"></script><script src="/js/mobile/photo.js"></script>
+<script src="/js/charts.js"></script>
+<script src="/js/charts2.js"></script><script src="/js/charts3.js"></script><script src="/js/overlays.js"></script>
+<script src="/js/cmdk.js"></script><script src="/js/card_forecast.js"></script><script src="/js/card_object.js"></script>
+<script src="/js/notify.js"></script><script src="/js/view_alerts.js"></script>
+<script src="/js/view_dashboard.js"></script><script src="/js/view_objects.js"></script>
+<script src="/js/view_graph.js"></script><script src="/js/view_forecasts.js"></script><script src="/js/view_plan.js"></script>
+<script src="/js/view_tickets.js"></script><script src="/js/view_audit.js"></script><script src="/js/view_sys.js"></script>
+<script src="/js/view_users.js"></script><script src="/js/login.js"></script><script src="/js/mobile/shell.js"></script>
+<script src="/js/app.js"></script>
+<script>
+/* __e2e.html — «водитель» интерфейса: жмёт кнопки/элементы и печатает отчёт
+   «элемент → что изменилось → время, мс». Запускается headless (см. tests/run_buttons_e2e.ps1).
+
+   Параметры строки запроса:
+     user=central.operator|dispatcher.alpha|tech.alpha   (по умолчанию central.operator)
+     reset=1   — включить проверку деструктивной кнопки «Заново с января»
+     mobile=1  — включить мобильный профиль (нижнее меню, «Ещё»)
+*/
+window.__errs = [];
+addEventListener("error", e => __errs.push("ERR:" + (e.message || "?")));
+addEventListener("unhandledrejection", e => __errs.push("REJ:" + ((e.reason && e.reason.message) || e.reason)));
+const out = document.getElementById("probe-out");
+const log = s => { out.textContent += s + "\n"; };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const Q = new URLSearchParams(location.search);
+const USER = Q.get("user") || "central.operator";
+const PWD = USER.split(".")[0] === "tech" ? "tech123"
+          : USER.split(".")[0] === "dispatcher" ? "alpha123" : "central123";
+const WITH_RESET = Q.get("reset") === "1";
+const rows = [];
+let fails = 0;
+
+async function step(name, fn, expect) {
+  const t0 = performance.now();
+  let note = "", ok = false;
+  try {
+    note = await fn() || "";
+    ok = typeof expect === "function" ? expect() : true;
+  } catch (e) { note = "ИСКЛЮЧЕНИЕ: " + (e && e.message); }
+  const ms = Math.round(performance.now() - t0);
+  rows.push({ name, ok, ms, note });
+  log(`${ok ? "ok  " : "FAIL"} ${name} — ${ms} мс${note ? " · " + note : ""}`);
+  if (!ok) fails++;
+  return ok;
+}
+const q = sel => document.querySelector(sel);
+const qa = sel => [...document.querySelectorAll(sel)];
+const wait = async (fn, ms = 4000, step = 150) => {
+  const t0 = performance.now();
+  while (performance.now() - t0 < ms) { if (fn()) return true; await sleep(step); }
+  return false;
+};
+const click = el => el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+/* счётчик сетевых запросов: позволяет честно мерить «через какое время обновилось» */
+let FETCHES = 0;
+const _fetch = window.fetch.bind(window);
+window.fetch = (...a) => { FETCHES++; return _fetch(...a); };
+const settle = async (before, quietMs = 400, cap = 8000) => {
+  const t0 = performance.now();
+  let last = FETCHES, lastChange = performance.now();
+  while (performance.now() - t0 < cap) {
+    await sleep(80);
+    if (FETCHES !== last) { last = FETCHES; lastChange = performance.now(); }
+    else if (FETCHES > before && performance.now() - lastChange > quietMs) break;
+  }
+  return Math.round(performance.now() - t0);
+};
+
+window.addEventListener("load", async () => {
+  try {
+    /* 0. вход и оболочка ---------------------------------------------------- */
+    await step("вход через форму входа (штатный запуск приложения)", async () => {
+      await wait(() => q(".login-wrap") || q("#shell"), 9000);
+      if (!q("#shell")) {
+        const demo = qa(".login-wrap .drow button").find(b => b.dataset.u === USER);
+        if (demo) click(demo);
+        else { q("#lu").value = USER; q("#lp").value = PWD; click(q("#lb")); }
+      }
+      const ok = await wait(() => q("#shell") && q("#topbar") && API.store.user, 12000);
+      if (!ok) throw new Error("вход не выполнился (возможно, неверный демо-логин)");
+      return `пользователь ${API.store.user.username} · роль ${API.store.user.role}`;
+    }, () => !!q("#shell") && !!q("#topbar") && !!API.store.user);
+
+    /* 1. Пульт -------------------------------------------------------------- */
+    await step("Пульт: раздел отрисован (KPI + тренд)", async () => {
+      await App.navigate("dashboard");
+      await wait(() => q(".kpis .kpi") && q("#trend-body"), 8000);
+      return `${qa(".kpis .kpi").length} KPI-карточки`;
+    }, () => qa(".kpis .kpi").length === 4 && !!q("#trend-body"));
+
+    await step("Пульт: клик по KPI переключает направление", async () => {
+      const before = App.state.task;
+      const other = qa(".kpis .kpi").find(k => k.dataset.t !== before) || qa(".kpis .kpi")[0];
+      click(other);
+      await wait(() => App.state.task !== before && !!q("#trend-body"), 8000);
+      return `направление ${before} → ${App.state.task}`;
+    }, () => !!q(".kpi.on") && !!q(".chip.on"));
+
+    await step("Пульт: тренд — горизонт «1 день» (p24)", async () => {
+      const b = qa("#tseg button").find(x => x.dataset.m === "p24"); click(b);
+      await wait(() => (q("#tseg button.on") || {}).dataset?.m === "p24", 5000);
+      await sleep(800);
+      const f = (q("#trend-hint") || {}).textContent || "";
+      return `подпись: «${f.trim().slice(0, 48)}»`;
+    }, () => (q("#tseg button.on") || {}).dataset?.m === "p24");
+
+    await step("Пульт: тренд — «30 дней» (risk30) + число точек", async () => {
+      const b = qa("#tseg button").find(x => x.dataset.m === "risk30"); click(b);
+      await wait(() => (q("#tseg button.on") || {}).dataset?.m === "risk30", 5000);
+      await wait(() => /риск 30 дней|точек пока/.test(
+        (q("#trend-hint") || {}).textContent || ""), 8000);
+      const f = (q("#trend-hint") || {}).textContent || "";
+      return `подпись: «${f.trim().slice(0, 56)}»`;
+    }, () => /риск 30 дней|точек пока/.test(
+      (q("#trend-hint") || {}).textContent || ""));
+
+    await step("Пульт: «максимум» переключает режим линий", async () => {
+      const cb = q("#tmax"); cb.checked = !cb.checked; cb.dispatchEvent(new Event("change"));
+      await sleep(1500);
+      return `showMax=${localStorage.getItem("mc_trend_max")}, линий=${q("#trend-body").querySelectorAll("path").length}`;
+    }, () => !!q("#trend-body") && q("#trend-body").querySelectorAll("path").length >= 2);
+
+    await step("Пульт: кнопка «Обновить» (перечитывает данные)", async () => {
+      const n0 = FETCHES;
+      click(q("#rf"));
+      const ms = await settle(n0);
+      return `запросов: +${FETCHES - n0}, данные обновлены за ~${ms} мс`;
+    }, () => !!q("#trend-body") && qa(".kpis .kpi").length === 4);
+
+    /* 2. Прогнозы и решения -------------------------------------------------- */
+    await step("Прогнозы: раздел и список", async () => {
+      await App.navigate("forecasts");
+      await wait(() => q("#pagebox .h1") && !q(".skel-grid"), 9000);
+      return `${qa("#pagebox tbody tr").length} строк в журнале`;
+    }, () => !!q("#pagebox .h1"));
+
+    await step("Прогнозы: открыть карточку прогноза из топа", async () => {
+      await App.navigate("dashboard"); await sleep(800);
+      const item = q("#pagebox .ritem, #pagebox .m-item");
+      if (!item) return "нет элементов топа";
+      click(item);
+      await wait(() => q(".drawer .dbody .hero, .drawer .dbody .dsec"), 8000);
+      return `карточка: ${(q(".drawer .dx .t") || {}).textContent?.trim().slice(0, 44)}`;
+    }, () => !!q(".drawer"));
+
+    await step("Прогнозы: кнопка решения в карточке", async () => {
+      const btn = qa(".drawer .dfoot .decgrid .btn").find(b => b.dataset.v === "reject");
+      if (!btn) { Overlay.closeDrawer(); return "роль без права решения (нет кнопок)"; }
+      click(btn);
+      await wait(() => q(".toast") || !q(".drawer"), 9000);
+      const t = (q(".toast") || {}).textContent || "";
+      Overlay.closeDrawer();
+      return `ответ: «${t.trim().slice(0, 60)}»`;
+    }, () => true);
+
+    /* 3. Заявки ------------------------------------------------------------- */
+    await step("Заявки: раздел, список и поиск", async () => {
+      await App.navigate("tickets");
+      await wait(() => q("#pagebox .kanban, #pagebox .m-tabs"), 9000);
+      const cards = qa("#pagebox .tk, #pagebox .m-item");
+      const n0 = cards.length;
+      let n1 = n0, needle = "";
+      if (n0 && q("#q")) {
+        const txt = (cards[0].textContent || "").replace(/\s+/g, " ").trim();
+        const stop = ["объект", "заявка", "заявки", "риск", "статус", "дата", "канал", "тип", "план",
+                      "задач", "задача", "выполнено", "назначена", "профилактика"];
+        const words = (txt.match(/[A-Za-zА-Яа-я0-9]{4,}/g) || [])
+          .filter(w => !stop.includes(w.toLowerCase()));
+        needle = words[0] || "";
+        if (needle) {
+          const inp = q("#q"); inp.value = needle; inp.dispatchEvent(new Event("input"));
+          await sleep(1800);
+          n1 = qa("#pagebox .tk, #pagebox .m-item").length;
+          inp.value = ""; inp.dispatchEvent(new Event("input")); await sleep(1200);
+        }
+      }
+      return `строк: ${n0} → ${n1} (поиск «${needle}»)`;
+    }, () => !!q("#pagebox .h1"));
+
+    await step("Заявки: открыть карточку (дата, комментарий, фото)", async () => {
+      const c = q("#pagebox .tk, #pagebox .m-item");
+      if (!c) return "заявок нет — пропуск";
+      click(c);
+      await wait(() => q(".drawer .dbody .dsec"), 8000);
+      return `дата=${!!q(".drawer #tsched")} · комментарий=${!!q(".drawer #cm")} · кнопка фото=${!!q(".drawer #addph")}`;
+    }, () => !!q(".drawer"));
+
+    await step("Заявки: смена статуса из карточки (с комментарием)", async () => {
+      const b = qa(".drawer .dfoot [data-s]").find(x => x.dataset.s === "in_progress")
+             || qa(".drawer .dfoot [data-s]")[0];
+      if (!b) { Overlay.closeDrawer(); return "нет доступных переходов"; }
+      const cm = q(".drawer #cm"); if (cm) cm.value = "e2e: проверка кнопки статуса";
+      click(b);
+      await wait(() => !q(".drawer") || q(".toast"), 9000);
+      const t = (q(".toast") || {}).textContent || "";
+      Overlay.closeDrawer();
+      return `ответ: «${t.trim().slice(0, 60)}»`;
+    }, () => true);
+
+    await step("Заявки: «Автоформирование» (dispatcher/central)", async () => {
+      const ab = q("#auto");
+      if (!ab) return "кнопки нет у этой роли";
+      click(ab);
+      await wait(() => q(".toast") || q(".toolrow"), 12000);
+      return `ответ: «${((q(".toast") || {}).textContent || "").trim().slice(0, 60)}»`;
+    }, () => true);
+
+    /* 4. Алерты -------------------------------------------------------------- */
+    await step("Алерты: раздел, фильтр направления, «Обновить»", async () => {
+      await App.navigate("alerts");
+      await wait(() => q("#pagebox .h1"), 9000);
+      const n0 = qa("#pagebox .m-item, #pagebox .ritem").length;
+      const sel = q("#ft");
+      if (sel) { sel.value = "wear"; sel.dispatchEvent(new Event("change")); await sleep(1600); }
+      click(q("#rf"));
+      await wait(() => q("#pagebox .h1"), 8000);
+      const n1 = qa("#pagebox .m-item, #pagebox .ritem").length;
+      return `сигналов: ${n0} → ${n1}`;
+    }, () => !!q("#pagebox .h1"));
+
+    /* 5. Система (только central) ------------------------------------------- */
+    if (API.store.user.role === "central") {
+      await step("Система: раздел и кнопки управления часами", async () => {
+        await App.navigate("sys");
+        await wait(() => q("#c-pause") || q("#tab"), 9000);
+        return `пауза=${!!q("#c-pause")} шаг=${!!q("#c-step")} скорость=${!!q("#c-speed")} сброс=${!!q("#c-reset")}`;
+      }, () => !!q("#c-pause") && !!q("#c-step") && !!q("#c-reset") && !!q("#c-speed"));
+
+      await step("Система: пауза → продолжение (состояние меняется)", async () => {
+        click(q("#c-pause"));
+        const paused = await wait(() => /Продолжить/.test(document.body.textContent), 9000);
+        if (paused) click(q("#c-pause"));
+        const resumed = await wait(() => /Пауза/.test(document.body.textContent), 9000);
+        return `пауза=${paused}, продолжено=${resumed}`;
+      }, () => /Пауза/.test(document.body.textContent));
+
+      await step("Система: скорость «4×» + живой статус прокрута", async () => {
+        const b = qa("#c-speed button").find(x => x.dataset.l === "4"); if (b) click(b);
+        await wait(() => /сим-время/.test((q("#c-live") || {}).textContent || ""), 12000);
+        return `статус: ${(q("#c-live") || {}).textContent?.trim().slice(0, 72)}`;
+      }, () => /сим-время/.test((q("#c-live") || {}).textContent || ""));
+
+      await step("Система: вкладка «Системный лог» наполняется", async () => {
+        const t = qa("#tab button").find(x => x.dataset.t === "log"); if (t) click(t);
+        await wait(() => qa("#pagebox .lrow").length > 0, 15000);
+        return `${qa("#pagebox .lrow").length} строк лога`;
+      }, () => qa("#pagebox .lrow").length > 0);
+
+      if (WITH_RESET) {
+        await step("Система: «Заново с января» — реплей сбрасывается", async () => {
+          const ov = qa("#tab button").find(x => x.dataset.t === "overview"); if (ov) click(ov);
+          await wait(() => q("#c-reset"), 7000);
+          click(q("#c-reset"));
+          await wait(() => q(".modal-wrap form button[type=submit]"), 5000);
+          click(q(".modal-wrap form button[type=submit]"));
+          await wait(() => /сим-время/.test((q("#c-live") || {}).textContent || ""), 25000);
+          return `статус часов: ${(q("#c-live") || {}).textContent?.trim().slice(0, 72)}`;
+        }, () => /сим-время/.test((q("#c-live") || {}).textContent || ""));
+
+        await step("После сброса: тренд показывает понятное состояние", async () => {
+          await App.navigate("dashboard");
+          await wait(() => q("#trend-body"), 9000);
+          await sleep(1200);
+          const foot = (q("#trend-hint") || {}).textContent || "";
+          const svg = !!q("#trend-body svg");
+          /* накопление точек после сброса проверяет раннер в реальном времени
+             (в headless виртуальное время сжимает ожидание тиков) */
+          return `svg=${svg} · подпись: «${foot.trim().slice(0, 70)}»`;
+        }, () => !!q("#trend-body .faint") && (/точек пока|риск 30 дней/.test(
+          (q("#trend-hint") || {}).textContent || "")));
+      }
+    }
+
+    /* 6. Общие элементы оболочки -------------------------------------------- */
+    await step("Темы: переключение всех трёх", async () => {
+      for (const th of UI.THEMES) { UI.setTheme(th); await sleep(250); }
+      return `текущая тема: ${UI.theme()}`;
+    }, () => UI.THEMES.includes(UI.theme()));
+
+    await step("Палитра команд: кнопка поиска и Ctrl+K", async () => {
+      let byBtn = false;
+      if (q("#search")) { click(q("#search")); byBtn = await wait(() => !!q(".cmdk"), 5000); }
+      if (byBtn) Cmdk.close();
+      await sleep(200);
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", code: "KeyK", ctrlKey: true, bubbles: true }));
+      const byKey = await wait(() => !!q(".cmdk"), 3000);
+      if (byKey) Cmdk.close();
+      const mob = !!(window.MOBILE && MOBILE.is());
+      return `кнопка=${byBtn ? "ok" : "нет"} · Ctrl+K=${byKey ? "ok" : (mob ? "выключен мобильным профилем" : "нет")}`;
+    }, () => true);
+
+    await step("Уведомления: панель риска", async () => {
+      Notify.toggle();
+      const ok = await wait(() => !!q(".npanel"), 4000);
+      Notify.close();
+      return `панель: ${ok ? "открыта" : "нет"}`;
+    }, () => true);
+
+    if (Q.get("mobile") === "1") {
+      await step("Мобильный профиль: нижнее меню и лист «Ещё»", async () => {
+        MOBILE.enhance(document.getElementById("shell") || document.body, { navigate: App.navigate });
+        await wait(() => qa(".mnav .mnav-item").length === 4, 5000);
+        MOBILE.openMore();
+        const sheet = await wait(() => !!q(".m-sheet"), 5000);
+        const cnt = qa(".m-sheet .sheet-item").length;
+        MOBILE.closeMore();
+        return `табов=${qa(".mnav .mnav-item").length}, лист=${sheet}, пунктов=${cnt}`;
+      }, () => qa(".mnav .mnav-item").length === 4);
+    }
+
+    /* 7. Отчёт --------------------------------------------------------------- */
+    /* гасим таймеры приложения: иначе headless (--dump-dom) не дождётся «простоя»
+       страницы из-за опроса уведомлений/часов и отчёта не будет */
+    try { if (window.Notify && Notify.stop) Notify.stop(); } catch (e) {}
+    try { UI.liveStop(); } catch (e) {}
+    for (let i = 1; i < 3000; i++) { try { clearInterval(i); clearTimeout(i); } catch (e) {} }
+    log("");
+    log("=== СВОДКА ===");
+    log(`шагов: ${rows.length} · провалов: ${fails} · JS-ошибок: ${__errs.length}`);
+    const md = ["# E2E-прогон интерфейса (кнопки)", "",
+      `Пользователь: **${USER}** · шагов: **${rows.length}** · провалов: **${fails}** · JS-ошибок: **${__errs.length}**`, "",
+      "| | шаг | время, мс | что изменилось |", "|---|---|---|---|",
+      ...rows.map(r => `| ${r.ok ? "✓" : "✗"} | ${r.name} | ${r.ms} | ${String(r.note).replace(/\|/g, "/")} |`)];
+    const rep = document.createElement("pre");
+    rep.id = "e2e-report"; rep.style.display = "none"; rep.textContent = md.join("\n");
+    document.body.appendChild(rep);
+    document.title = (fails === 0 && __errs.length === 0) ? "E2E OK" : `E2E FAIL ${fails}/${__errs.length}`;
+  } catch (e) {
+    log("EXCEPTION: " + (e && e.message));
+    document.title = "E2E EXCEPTION";
+  }
+});
+</script>
+</body>
+</html>
+

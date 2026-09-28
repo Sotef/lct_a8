@@ -51,6 +51,9 @@ services/data/raw/*
 !services/data/raw/buckets_2026.parquet
 # каталог живой подачи (SIM_FEED=1): кэш/панели, которые сервис строит сам
 services/data/stream/
+# генерируемые отчёты прогонов (тесты кнопок/E2E)
+services/data/buttons_api_report.md
+services/data/e2e_report.md
 services/data/*.db-*
 services/.venv/
 services/*.log

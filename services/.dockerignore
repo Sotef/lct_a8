@@ -37,3 +37,4 @@ pip.conf
 app/web/__probe.html
 app/web/__mprobe.html
 app/web/__dprobe.html
+app/web/__e2e.html

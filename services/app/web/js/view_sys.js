@@ -3,7 +3,7 @@ window.Views = window.Views || {};
 Views.sys = (() => {
   const { el, esc, ic, fmt, fmtInt, dt } = UI;
   let tab = "overview", level = "", logger = "", q = "", paused = false, afterId = 0, lines = [];
-  let timer = null;
+  let timer = null, clkTimer = null;
 
   async function render(main, state) {
     stop();
@@ -131,6 +131,7 @@ Views.sys = (() => {
         <button class="btn ghost sm" id="c-step">${ic("chevron", "s")} Шаг +6 ч</button></div>
       <div class="faint" style="font-size:11.5px;margin-top:8px">перезапуск круга касается только прогнозов:
         решения диспетчера, назначенные и выполненные заявки и журнал аудита сохраняются</div>
+      <div class="faint" id="c-live" style="font-size:11.5px;margin-top:6px"></div>
       ${clk.last_counts ? `<div class="note">последний тик: ${Object.entries(clk.last_counts)
         .map(([k, v]) => `${esc(k)}=${esc(v)}`).join(" · ")}</div>` : ""}
       ${clk.error ? `<div class="note" style="color:var(--bad)">${esc(String(clk.error)).slice(0, 300)}</div>` : ""}</div>`);
@@ -164,10 +165,15 @@ Views.sys = (() => {
       try {
         const r = await API.post(path, opts && opts.json);
         const c = r.clock || {};
-        UI.toast(`сим-время ${(c.sim_now || "").replace("T", " ")}${c.paused ? " · пауза" : ""}`
-          + (opts && opts.json && opts.json.level ? ` · ${c.speed}×` : ""), "ok",
-          { title: "Реплей данных" });
+        const isReset = String(path).includes("/clock/reset");
+        UI.toast(isReset
+          ? `сим-время ${String(c.sim_now || "").replace("T", " ")} · первый тик ~${c.tick_sec || 75} с; `
+            + "прогнозы, тренд и KPI наполняются по одному 6ч-бакету за тик"
+          : `сим-время ${(c.sim_now || "").replace("T", " ")}${c.paused ? " · пауза" : ""}`
+            + (opts && opts.json && opts.json.level ? ` · ${c.speed}×` : ""),
+          "ok", { title: isReset ? "Реплей перезапущен с 01.01.2026" : "Реплей данных", ms: isReset ? 9000 : 6000 });
         API.invalidate();
+        state.clock = c;                    // чтобы пульт/шапка сразу видели новое сим-время
         if (main && state) await Views.sys.render(main, state); else location.reload();
       } catch (e) { UI.toast(e.message, "err"); btn.classList.remove("loading"); }
     };
@@ -185,6 +191,25 @@ Views.sys = (() => {
       call("/admin/clock/speed", e.currentTarget, null, { json: { fast: e.target.checked } });
     clock.querySelector("#c-par").onchange = e =>
       call("/admin/clock/speed", e.currentTarget, null, { json: { parallel: e.target.checked } });
+
+    /* Живой статус прокрута: после «Заново с января» видно, что часы тикают, какой бакет
+       считается и когда ждать следующий тик (иначе кажется, что «ничего не происходит»). */
+    const paintLive = async () => {
+      const node = clock.querySelector("#c-live");
+      if (!node || !node.isConnected) return;   // карточка ещё не вставлена (mount) — просто ждём
+      const c = await API.get("/meta/clock").catch(() => null);
+      if (!c || !node.isConnected) return;
+      node.textContent = `сим-время ${String(c.sim_now || "—").replace("T", " ")}`
+        + ` · пройдено ${Math.round((c.progress || 0) * 100)}%`
+        + (c.computing ? " · идёт расчёт…" : "")
+        + (c.last_tick_sec ? ` · последний тик ${c.last_tick_sec} с` : "")
+        + (c.next_tick_in_sec !== null && c.next_tick_in_sec !== undefined
+          ? ` · следующий тик через ~${c.next_tick_in_sec} с` : " · часы на границе периода")
+        + (c.feed && c.feed.enabled && c.feed.cache_rows
+          ? ` · живая подача: кэш ${c.feed.cache_rows} строк` : "");
+    };
+    setTimeout(paintLive, 60);          // после вставки карточки в DOM (UI.mount ниже)
+    clkTimer = setInterval(paintLive, 4000);
   }
   function renderLog(host, main, state) {
     const bar = el(`<div class="toolrow">
@@ -287,6 +312,9 @@ Views.sys = (() => {
       (кнопка «Перезагрузить модели»): активные артефакты читаются заново, прогнозы следующего тика считаются на новой версии.
       ${sys && sys.auto_tickets ? `Автоформирование заявок: risk30 ≥ ${sys.auto_tickets.min_risk}, top-${sys.auto_tickets.top_k} за тик.` : ""}</div>`));
   }
-  function stop() { if (timer) { clearInterval(timer); timer = null; } }
+  function stop() {
+    if (timer) { clearInterval(timer); timer = null; }
+    if (clkTimer) { clearInterval(clkTimer); clkTimer = null; }
+  }
   return { render, destroy: stop, name: "Система", icon: "server" };
 })();
