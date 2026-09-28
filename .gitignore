@@ -19,6 +19,8 @@ jupyter_cloud_config.yaml
 # Данные СМВУ: тяжёлые выгрузки (~16 ГБ) в git не кладём
 research/dataset/
 *.7z
+# крупные архивы данных (например research/dataset.zip ~4.8 ГБ) — тоже вне git
+research/*.zip
 # ...но справочники нужны сервису для bootstrap (objects_ref/channels_ref) — коммитим
 !research/dataset/
 research/dataset/*
