@@ -50,7 +50,10 @@ def _ensure_columns() -> None:
     from sqlalchemy import inspect, text
     insp = inspect(engine)
     migrations = {
-        "predictions": {"p72": "FLOAT"},
+        "predictions": {"p72": "FLOAT", "p7d": "FLOAT", "pinned": "INTEGER DEFAULT 0"},
+        "maintenance_tasks": {"prediction_id": "INTEGER", "source": "VARCHAR(20)",
+                              "priority": "VARCHAR(10)", "comment": "TEXT",
+                              "scheduled_at": "TIMESTAMP", "updated_at": "TIMESTAMP"},
     }
     with engine.begin() as conn:
         for table, cols in migrations.items():

@@ -1,3 +1,25 @@
+/* ================== ОБЩИЕ ТОКЕНЫ ДВИЖЕНИЯ ================== */
+:root {
+  --ease-out: cubic-bezier(.16, 1, .3, 1);
+  --ease-spring: cubic-bezier(.34, 1.56, .64, 1);
+  --ease-io: cubic-bezier(.65, 0, .35, 1);
+  --dur: .45s;
+  --blur: 18px;
+  --radius-xs: 8px;
+  --panel-2: rgba(255,255,255,.07);
+  --panel-hover: rgba(255,255,255,.065);
+  --bg-3: #141724;
+  --accent-3: #f472b6;
+  --info: #60a5fa;
+  --on-accent: #fff;
+  --grad-soft: linear-gradient(135deg, rgba(139,92,246,.18), rgba(34,211,238,.10));
+  --glow: 0 0 0 1px rgba(139,92,246,.35), 0 10px 40px -10px rgba(139,92,246,.55);
+  --shadow-lg: 0 40px 120px -30px rgba(0,0,0,.85);
+  --orb-1: rgba(139,92,246,.30); --orb-2: rgba(34,211,238,.18); --orb-3: rgba(244,114,182,.12);
+  --net-line: 139,92,246; --net-dot: 34,211,238;
+  --scan: none;
+}
+
 /* ================== ТЕМА 1: OBSIDIAN — тёмный глассморфизм ================== */
 /* Референс: recent.design / award-winning dark dashboards.                    */
 [data-theme="obsidian"] {
@@ -29,7 +51,9 @@
               radial-gradient(1000px 700px at -10% 110%, rgba(34,211,238,.10), transparent 60%),
               var(--bg);
 }
-[data-theme="obsidian"] body { background: var(--backdrop); }
+[data-theme="obsidian"] { color-scheme: dark; --bg: #07080d; --bg-2: #0d0f17;
+  --grad: linear-gradient(135deg, #8b5cf6 0%, #6366f1 45%, #22d3ee 100%);
+  --text-faint: #5f667c; --backdrop: var(--bg); }
 
 /* ================== ТЕМА 2: EDITORIAL — светлый журнальный ================== */
 /* Референс: awwwards editorial sites. Тонкие линейки, серифы, бумага.        */
@@ -60,7 +84,14 @@
   --card-glow: 0 1px 0 var(--border), var(--shadow);
   --backdrop: var(--bg);
 }
-[data-theme="editorial"] body { background: var(--backdrop); }
+[data-theme="editorial"] { color-scheme: light;
+  --panel-2: rgba(23,21,15,.04); --panel-hover: rgba(23,21,15,.035); --bg-3: #e9e3d7;
+  --accent-3: #1d4ed8; --info: #1d4ed8;
+  --grad-soft: linear-gradient(135deg, rgba(185,28,28,.08), rgba(29,78,216,.06));
+  --glow: 0 0 0 1px rgba(185,28,28,.35), 0 10px 30px -12px rgba(185,28,28,.35);
+  --shadow-lg: 0 30px 80px -30px rgba(23,21,15,.35);
+  --orb-1: rgba(185,28,28,.07); --orb-2: rgba(29,78,216,.06); --orb-3: rgba(180,83,9,.05);
+  --net-line: 23,21,15; --net-dot: 185,28,28; --blur: 0px; }
 
 /* ================== ТЕМА 3: TERMINAL — пульт диспетчера ==================== */
 /* Фосфорный моно-консоль: плотно, моноширинно, uppercase, сканлайны.        */
@@ -94,5 +125,13 @@
     radial-gradient(900px 600px at 50% 0%, rgba(22,255,138,.06), transparent 70%),
     var(--bg);
 }
-[data-theme="terminal"] body { background: var(--backdrop); }
+[data-theme="terminal"] { color-scheme: dark;
+  --panel-2: rgba(22,255,138,.07); --panel-hover: rgba(22,255,138,.06); --bg-3: #0f1a12;
+  --accent-3: #ffd23f; --info: #7dd3fc; --on-accent: #041008;
+  --grad-soft: linear-gradient(135deg, rgba(22,255,138,.12), rgba(125,211,252,.06));
+  --glow: 0 0 0 1px rgba(22,255,138,.5), 0 0 30px -6px rgba(22,255,138,.55);
+  --shadow-lg: 0 0 0 1px var(--border-strong);
+  --orb-1: rgba(22,255,138,.10); --orb-2: rgba(125,211,252,.06); --orb-3: rgba(22,255,138,.05);
+  --net-line: 22,255,138; --net-dot: 22,255,138; --blur: 4px;
+  --scan: repeating-linear-gradient(0deg, rgba(0,0,0,.22) 0 1px, transparent 1px 3px); }
 [data-theme="terminal"] * { letter-spacing: .02em; }

@@ -10,6 +10,7 @@ import datetime as dt
 
 from sqlalchemy.orm import Session
 
+from .. import config
 from .. import models_db as dbm
 from .. import task_cfg
 from ..adapters.journal import JournalStreamAdapter
@@ -83,6 +84,12 @@ def run_prediction_cycle(db: Session, tasks: list[str] | None = None,
             result[task] = res
         except Exception as exc:  # noqa: BLE001
             result[task] = {"error": str(exc)}
+    if config.ALERTS_PUSH:
+        try:
+            from . import alerts as alerts_worker
+            result["alerts"] = alerts_worker.run(db)
+        except Exception as exc:  # noqa: BLE001
+            result["alerts"] = {"error": str(exc)}
     return {"bucket": bucket, "results": result}
 
 

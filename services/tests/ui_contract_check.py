@@ -75,7 +75,23 @@ PAGES = {
          lambda s: s["rows"] and all(k in s["rows"][0] for k in (
              "plan", "тип_датчика", "каналов", "риск_средний", "score_сумма", "exp_days_медиана"))),
     ],
+    "Заявки": [
+        ("GET", "/maintenance/tickets?limit=20", "tickets",
+         lambda s: "items" in s and all(k in (s["items"][0] if s["items"] else {}) for k in (
+             "status", "status_ru", "priority", "source", "due_to")) if s["items"] else True),
+        ("GET", "/maintenance/summary", "summary",
+         lambda s: "by_status" in s and "open" in s),
+    ],
 }
+# ручки, доступные не всем ролям: (путь, роли, валидатор)
+RESTRICTED = [
+    ("/audit?size=5", ("dispatcher", "central"),
+     lambda s: "items" in s and "total" in s),
+    ("/audit/actions", ("dispatcher", "central"), lambda s: "actions" in s),
+    ("/admin/system", ("central",), lambda s: "counts" in s and "log" in s),
+    ("/admin/logs?limit=5", ("central",), lambda s: "last_id" in s),
+    ("/admin/models", ("central",), lambda s: "models" in s),
+]
 
 ROLES = [("central.operator", "central123", "central"),
          ("dispatcher.alpha", "alpha123", "dispatcher"),
@@ -98,6 +114,14 @@ for user, pwd, role in ROLES:
                 page_ok = False
                 chk(f"{role}/{page}/{name}", False, f"status={code}")
         chk(f"{role}/{page}: все элементы на месте", page_ok)
+
+    # ручки с ограничением по ролям
+    for path, roles, validator in RESTRICTED:
+        code, data = get(path)(c, h)
+        if role in roles:
+            chk(f"{role} доступ к {path}", code == 200 and validator(data), f"status={code}")
+        else:
+            chk(f"{role}: {path} закрыт", code == 403, f"status={code}")
 
     fl = c.get(f"{B}/forecasts?task=wear&page=1&size=5&horizon=30d", headers=h)
     if fl.status_code == 200 and fl.json()["items"]:
@@ -126,11 +150,18 @@ chk("tech/users закрыт", c.get(f"{B}/auth/admin/users", headers=h).status_
 chk("tech/create-user закрыт", c.post(f"{B}/auth/admin/create-user", headers=h,
     json={"username": "x", "password": "xxxx", "role": "tech"}).status_code == 403)
 
-# навигация в JS соответствует матрице
+# навигация в JS соответствует матрице ролей (VIEWS: roles[])
 import pathlib
 appjs = (pathlib.Path(__file__).resolve().parent.parent / "app/web/js/app.js").read_text(encoding="utf-8")
-chk("nav: tech имеет план ТО", '"dashboard", "objects", "plan"' in appjs)
-chk("nav: central имеет пользователей", 'items = [...items, "users"]' in appjs)
+chk("nav: описана матрица ролей разделов", "roles: [" in appjs and '"dashboard"' in appjs)
+chk("nav: план ТО и заявки доступны технику",
+    bool(__import__("re").search(r'\{\s*v:\s*"plan"[^}]*roles:\s*\[[^\]]*"tech"', appjs))
+    and bool(__import__("re").search(r'\{\s*v:\s*"tickets"[^}]*roles:\s*\[[^\]]*"tech"', appjs)))
+chk("nav: аудит только для dispatcher/central",
+    bool(__import__("re").search(r'\{\s*v:\s*"audit"[^}]*roles:\s*\[[^\]]*"central"', appjs)))
+chk("nav: система и пользователи только central",
+    bool(__import__("re").search(r'\{\s*v:\s*"sys"[^}]*roles:\s*\["central"\]', appjs))
+    and bool(__import__("re").search(r'\{\s*v:\s*"users"[^}]*roles:\s*\["central"\]', appjs)))
 
 print("=== UI CONTRACT:", "ALL OK" if ok else "FAIL", f"({cards_checked} карточек) ===")
 sys.exit(0 if ok else 1)

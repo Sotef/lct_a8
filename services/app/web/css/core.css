@@ -1,0 +1,69 @@
+/* core.css — сброс, раскладка, фон */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  font-family: var(--font); color: var(--text); background: var(--bg);
+  font-size: 14px; line-height: 1.45; -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+a { color: var(--accent-2); text-decoration: none; }
+button { font: inherit; cursor: pointer; color: inherit; }
+input, select, textarea { font: inherit; color: var(--text); }
+::selection { background: var(--accent); color: var(--on-accent); }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 10px;
+  border: 3px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-track { background: transparent; }
+svg { display: block; }
+.ico { width: 18px; height: 18px; flex: 0 0 auto; display: inline-block; vertical-align: middle; }
+.ico.s { width: 14px; height: 14px; }
+.ico.l { width: 22px; height: 22px; }
+
+/* --- живой фон: canvas-сеть коллекторов + орбы + сканлайны --- */
+#bgfx { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
+.bg-orbs { position: fixed; inset: -20vmax; z-index: 0; pointer-events: none; filter: blur(60px); }
+/* фон выключен пользователем (Система → Обзор → «Фон и анимации» / Ctrl+K) */
+body.bg-off #bgfx, body.bg-off .bg-orbs { display: none; }
+body.bg-slow .bg-orbs i { animation-duration: 90s !important; }
+.bg-orbs i { position: absolute; border-radius: 50%; width: 55vmax; height: 55vmax; opacity: .9;
+  animation: orb 28s var(--ease-io) infinite alternate; }
+.bg-orbs i:nth-child(1) { background: radial-gradient(circle, var(--orb-1), transparent 65%); left: 45%; top: -5%; }
+.bg-orbs i:nth-child(2) { background: radial-gradient(circle, var(--orb-2), transparent 65%); left: -5%; top: 45%;
+  animation-duration: 34s; animation-delay: -8s; }
+.bg-orbs i:nth-child(3) { background: radial-gradient(circle, var(--orb-3), transparent 65%); left: 60%; top: 60%;
+  animation-duration: 40s; animation-delay: -16s; }
+@keyframes orb { 0% { transform: translate(0,0) scale(1); } 50% { transform: translate(-8vmax, 6vmax) scale(1.15); }
+  100% { transform: translate(6vmax, -4vmax) scale(.9); } }
+body::after { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 1;
+  background: var(--scan); }
+#app { position: relative; z-index: 2; min-height: 100vh; }
+
+.main { min-width: 0; padding: 0 28px 70px; }
+.page-head { display: flex; align-items: flex-end; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+.page-head .grow { flex: 1; }
+.h1 { font-family: var(--font-display); font-size: 30px; font-weight: 800; letter-spacing: -.03em;
+  text-transform: var(--head-caps); line-height: 1.1; }
+.h1 .gt { background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.sub { color: var(--text-dim); font-size: 12.5px; margin-top: 6px; }
+.muted { color: var(--text-dim); }
+.faint { color: var(--text-faint); }
+.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.row { display: flex; align-items: center; gap: 10px; }
+.wrap { flex-wrap: wrap; }
+.grow { flex: 1; }
+.grid2 { display: grid; grid-template-columns: 1.35fr 1fr; gap: 16px; align-items: start; }
+.grid2e { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.stack { display: flex; flex-direction: column; gap: 16px; }
+@media (max-width: 1200px) { .grid2, .grid2e, .grid3 { grid-template-columns: 1fr; } }
+@media (max-width: 860px) {
+  .shell { grid-template-columns: 1fr !important; }
+  .sidebar { position: fixed; left: 0; width: 248px; transform: translateX(-100%);
+    transition: transform .4s var(--ease-out); }
+  .shell.mobile-open .sidebar { transform: none; }
+  .main { padding: 0 14px 60px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important; }
+}

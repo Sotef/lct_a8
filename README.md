@@ -2,6 +2,110 @@
 
 Веб-сервис прогнозирования отказов датчиков и аварий инженерных коллекторов АО «Москоллектор» (hackathon/технологическое соревнование). Стек: Python 3.12, FastAPI (бэкенд), PostgreSQL, LightGBM/CatBoost (ML), Jupyter (research).
 
+## Быстрый старт в Docker (самый простой способ)
+
+Нужен только **Docker Desktop** — Python, venv и БД ставить не требуется.
+
+```powershell
+cd services
+copy .env.docker.example .env        # bash: cp .env.docker.example .env
+docker compose up -d --build
+```
+
+Через 2–3 минуты после первой сборки (скачивается образ Python и зависимости, затем
+поднимается PostgreSQL, сервис сам создаёт схему, демо-пользователей, реестр моделей
+и запускает прогнозы):
+
+- SPA (диспетчер/техник): **http://127.0.0.1:8000/**
+- Swagger: **http://127.0.0.1:8000/docs**
+- Проверка развёртывания: `docker compose exec -T api python scripts/verify_deploy.py`
+- HTTPS (TLS 1.2+, требование ТЗ): положите сертификат в `services/deploy/certs`
+  и выполните `docker compose --profile tls up -d --build` → **https://127.0.0.1:8443/**
+
+Демо-доступы:
+
+| Логин | Пароль | Роль |
+|---|---|---|
+| `central.operator` | `central123` | центральный диспетчер |
+| `dispatcher.alpha` | `alpha123` | диспетчер района |
+| `tech.alpha` | `tech123` | техник (район 5122) |
+
+```powershell
+docker compose ps                 # статусы и healthcheck
+docker compose logs -f api        # логи сервиса
+docker compose down               # остановить (данные БД сохраняются)
+docker compose down -v            # удалить БД (демо «с нуля»; затем up -d --build)
+```
+
+> Если порт `8000` занят локальным (не-Docker) `uvicorn` — остановите его: иначе
+> запросы уходят мимо контейнера. Подробности (переменные, тома, эксплуатация) —
+> в `services/README.md`; мобильная версия (PWA/офлайн/push) — в `services/MOBILE_PLAN.md`.
+
+### Что уже есть в репозитории (запуск «из клона» работает сразу)
+
+| В git | Размер | Зачем |
+|---|---|---|
+| `research/models/tte_{fire,access,sensor,wear}_discrete_hazard.cbm` + `calib30_access.pkl` | ~31 МБ | обученные модели (инференс) |
+| `research/dataset/справочник_каналов_датчиков.csv`, `справочник_объектов_диспетчер.csv` | ~1,3 МБ | справочники → `objects_ref` / `channels_ref` (bootstrap) |
+| `services/data/raw/buckets_2026.parquet` | 1,1 МБ | сырой 6ч-кэш 2026: панели собираются из него на первом запуске |
+| `services/data/z_stats_*.csv`, `_features_schema.json`, `l2_object_risk.parquet`, `cat_codes_*.json` | <1 МБ | train-статистики z, схема фич, L2-риски |
+| `research/*.py` (`features`, `tte_pipeline`, `inference_contract`, `data_utils`) | — | ML-ядро, подключается сервисом как библиотека |
+
+**Итого ~33 МБ** → после `git clone` достаточно `docker compose up -d --build`: модели
+загрузятся, справочники наполнятся, панели пересоберутся из raw-кэша, пойдут прогнозы,
+алерты и превентивные заявки.
+
+**Чего в git нет** (и для демо не требуется):
+- `research/dataset/extracted/ext-journal-*.csv` (~16 ГБ) — исходные журналы СМВУ: нужны
+  только для загрузки новых данных (`POST /admin/data/load`) или переобучения;
+- `services/data/panels/*.csv` (~319 МБ) — пересобираются из raw-кэша автоматически
+  (`feature_pipeline.build_subjects`, проверено: те же 64 признака в том же порядке,
+  что и при обучении);
+- `services/data/*.db`, логи, TLS-ключи — см. `.gitignore`.
+
+## Тест на мобильных устройствах (телефон/планшет)
+
+Тот же сайт имеет мобильный профиль: нижнее меню из 4 табов, bottom-sheet «Ещё»,
+карточки вместо таблиц/канбана, офлайн-очередь действий, установка как PWA, push.
+Способ проверки зависит от того, что нужно проверить.
+
+### 1. Вёрстка и рабочие сценарии на реальном телефоне (быстро)
+1. Узнайте IP компьютера с Docker: `ipconfig` (адрес вида `192.168.x.x`) или
+   `Get-NetIPAddress -AddressFamily IPv4 | Where-Object AddressState -eq Preferred`.
+2. На телефоне в той же Wi-Fi/сети откройте `http://<IP>:8000` — работает адаптивная
+   вёрстка, все разделы, карточки, заявки, фото с камеры.
+3. Если не открывается, разрешите порт (PowerShell **от администратора**):
+   `netsh advfirewall firewall add rule name="LCT 8000" dir=in action=allow protocol=TCP localport=8000`
+4. Приёмка по экранам — чек-лист `services/MOBILE_PLAN.md`, **Приложение C**.
+
+> По `http://<IP>` origin считается **небезопасным**: service worker, установка PWA,
+> офлайн-очередь и Web Push на телефоне не включатся. Для проверки вёрстки/логики
+> и обычных запросов этого достаточно.
+
+### 2. Полный PWA-сценарий (установка, офлайн, push)
+Нужен *secure context* (HTTPS или localhost):
+- **Проще всего — на компьютере**: откройте `http://127.0.0.1:8000`, включите в DevTools
+  (F12) режим устройства (Pixel/iPhone). `localhost` безопасен, поэтому доступны SW,
+  установка приложения и офлайн-очередь; офлайн удобно проверять в
+  DevTools → Application → Service Workers (Offline).
+- **На телефоне** — только по HTTPS с **доверенным** сертификатом (корпоративный CA):
+  `docker compose --profile tls up -d --build` и `https://<IP>:8443`. Самоподписанный
+  сертификат Chrome не примет для service worker.
+- Уведомления: «Ещё» → «Включить уведомления» (нужны `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`
+  в `.env`; без них работает фолбэк-поллинг `GET /alerts` — алерты видны в разделе «Алерты»).
+
+### 3. Автоматическая проверка мобильного профиля (без телефона)
+```powershell
+# команды выполняются из папки services (там docker-compose.yml):
+# служебная страница не входит в образ — копируем её в контейнер
+docker compose cp app/web/__mprobe.html api:/workspace/services/app/web/__mprobe.html
+# затем откройте в браузере (или headless-прогоном, см. services/MOBILE_PLAN.md):
+#   http://127.0.0.1:8000/__mprobe.html?stub=1
+```
+Страница печатает отчёт (`MPROBE OK`/`FAIL`): 4 таба нижнего меню, тап-цели ≥44 px,
+отсутствие горизонтального скролла, мобильные табы заявок, sheet «Ещё», карточки алертов.
+
+
 ## Структура репозитория
 
 ```
@@ -33,9 +137,11 @@ lct_a8/
     ├── scripts/         # seed.py, run_demo.py, replay_history.py, validate_2026.py
     ├── tests/           # unit + front-contract + сверка с research (pytest)
     ├── data/            # SQLite (локально), 6ч-панели 2026, z-stats, кэш ингеста
-    ├── Dockerfile, docker-compose.yml, .env.example
-    ├── README.md        # быстрый старт, API, реплей, тесты
+    ├── Dockerfile, docker-compose.yml, .dockerignore, .env.docker.example
+    ├── deploy/          # nginx (TLS 1.2+) + сертификаты (certs — не в git)
+    ├── README.md        # быстрый старт (Docker), API, реплей, тесты, тест на мобильных
     ├── SERVICE_PLAN.md  # план сервиса (уточнён по итогам встречи с экспертами)
+    ├── MOBILE_PLAN.md   # мобильная версия (PWA/офлайн/push): план, статус, проверка на телефоне
     └── BACKEND_SPEC.md  # интеграционная спецификация: ручки, БД, авторизация, пайплайн и модель
 ```
 
@@ -108,7 +214,9 @@ research\.venv\Scripts\python.exe -m jupyter lab
 - [x] Инференс-контракт для backend: `inference_contract.py` (модель + калибровка + top-K + план ТО)
 - [x] Календарь плановых ТО/ППР заказчика (2026): `planned_work.py`, `notebooks/33_planned_work_2026.ipynb`
 - [x] **FastAPI-сервис, БД, frontend, JWT/RBAC, audit, реплей 2026** (тесты: 19 passed) — см. `services/README.md`
-- [~] Прод-обвязка (PostgreSQL/TLS/LDAP) и внешние адаптеры (АРМ/ОДС/СКУД) — интерфейсы готовы, данные не поставлены
+- [x] **Развёртывание в Docker**: PostgreSQL 12+ + API + SPA/PWA (+ TLS-профиль nginx), `docker compose up -d --build` — см. `services/README.md`
+- [x] **Мобильная версия**: адаптивный mobile-first профиль + PWA (нижнее меню, офлайн-очередь действий, push, алерты) — см. `services/MOBILE_PLAN.md`
+- [~] LDAP/AD (на MVP — локальные пользователи) и внешние адаптеры (АРМ/ОДС/СКУД) — интерфейсы готовы, данные не поставлены
 
 ## MCP: локальный поиск (free-search-mcp, без API-ключей)
 

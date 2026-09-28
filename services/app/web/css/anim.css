@@ -1,0 +1,65 @@
+/* anim.css — ключевые кадры, reveal, переходы страниц */
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes ping { 0% { transform: scale(1); opacity: .7; } 80%, 100% { transform: scale(2.2); opacity: 0; } }
+@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+@keyframes shimmer { to { transform: translateX(100%); } }
+@keyframes ripple { to { transform: scale(4); opacity: 0; } }
+@keyframes pop { 0% { transform: scale(0); } 60% { transform: scale(1.25); } 100% { transform: scale(1); } }
+@keyframes fadeIn { from { opacity: 0; } }
+@keyframes fadeOut { to { opacity: 0; } }
+@keyframes slideUp { from { opacity: 0; transform: translateY(14px); } }
+@keyframes popIn { from { opacity: 0; transform: scale(.92) translateY(10px); } }
+@keyframes cmdIn { from { opacity: 0; transform: translateX(-50%) scale(.94) translateY(-10px); } }
+@keyframes dropIn { from { opacity: 0; transform: scale(.9) translateY(-8px); } }
+@keyframes drawerIn { from { opacity: 0; transform: translateX(60px) scale(.98); } }
+@keyframes drawerOut { to { opacity: 0; transform: translateX(80px) scale(.98); } }
+@keyframes toastIn { from { opacity: 0; transform: translateX(60px) scale(.9); } }
+@keyframes toastOut { to { opacity: 0; transform: translateX(60px) scale(.9); height: 0; padding: 0; margin: 0; } }
+@keyframes shrink { from { width: 100%; } to { width: 0; } }
+@keyframes flashOk { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 60%, transparent); }
+  100% { box-shadow: 0 0 0 16px transparent; } }
+@keyframes rowIn { from { opacity: 0; transform: translateY(8px); } }
+@keyframes glowPulse { 0%, 100% { filter: drop-shadow(0 0 0 transparent); }
+  50% { filter: drop-shadow(0 0 10px var(--bad)); } }
+@keyframes dash { to { stroke-dashoffset: 0; } }
+@keyframes flow { to { stroke-dashoffset: -40; } }
+@keyframes growX { from { transform: scaleX(0); } }
+@keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+
+/* каскадное появление: JS ставит --i */
+.rv { animation: slideUp .6s var(--ease-out) both; animation-delay: calc(var(--i, 0) * 55ms); }
+.rv-row { animation: rowIn .45s var(--ease-out) both; animation-delay: calc(min(var(--i, 0), 20) * 22ms); }
+/* тихое обновление (live/ползунки): содержимое перерисовывается без «въезда» */
+.quiet .rv, .quiet .rv-row, .quiet .drawline, .quiet .halo, .quiet .pulse-bad,
+.quiet .live-dot::after, .quiet .skel::after { animation: none !important; }
+.quiet [data-w] { transition: none !important; }
+.quiet .drawline { stroke-dashoffset: 0 !important; stroke-dasharray: none !important; }
+.flash { animation: flashOk 1s var(--ease-out); }
+.drawline { stroke-dasharray: var(--len, 3000); stroke-dashoffset: var(--len, 3000);
+  animation: dash 1.4s var(--ease-out) forwards; }
+.flowline { stroke-dasharray: 6 14; animation: flow 1.6s linear infinite; }
+.pulse-bad { animation: glowPulse 2s infinite; }
+
+/* переходы страниц (fallback, если нет View Transitions API) */
+.page-enter { animation: pageIn .55s var(--ease-out) both; }
+@keyframes pageIn { from { opacity: 0; transform: translateY(16px); filter: blur(6px); } }
+::view-transition-old(page) { animation: vtOut .28s var(--ease-io) both; }
+::view-transition-new(page) { animation: vtIn .5s var(--ease-out) both; }
+@keyframes vtOut { to { opacity: 0; transform: translateY(-10px) scale(.99); filter: blur(4px); } }
+@keyframes vtIn { from { opacity: 0; transform: translateY(18px) scale(.99); filter: blur(6px); } }
+#pagebox { view-transition-name: page; }
+::view-transition-old(root), ::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
+
+/* раздел на время загрузки нового: прошлое содержимое видно, но не кликается */
+#pagebox.page-busy { opacity: .6; filter: saturate(.75); pointer-events: none; transition: opacity .2s var(--ease-out); }
+/* мягкая «вспышка» изменившегося значения при тихом обновлении (тик, фильтр) */
+@keyframes lvFlash { from { background: color-mix(in srgb, var(--accent-2) 26%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-2) 14%, transparent); } }
+.lv-flash { animation: lvFlash .9s var(--ease-out) both; border-radius: 6px; }
+
+/* лоадер загрузки приложения */
+.boot { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: var(--bg);
+  transition: opacity .6s var(--ease-out), visibility .6s; }
+.boot.done { opacity: 0; visibility: hidden; }
+.boot .ring { width: 56px; height: 56px; border-radius: 50%; border: 3px solid var(--border);
+  border-top-color: var(--accent); border-right-color: var(--accent-2); animation: spin .9s linear infinite; }

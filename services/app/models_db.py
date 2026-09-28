@@ -38,6 +38,7 @@ class Prediction(Base):
     bucket_ts = Column(DateTime(timezone=True), nullable=False, index=True)
     p24 = Column(Float)
     p72 = Column(Float)                          # P(событие ≤ 72 ч) — короткий горизонт
+    p7d = Column(Float)                          # P(событие ≤ 7 дней) — для графа/алертов
     risk30 = Column(Float)
     risk30_cal = Column(Float)
     exp_days = Column(Float)
@@ -50,6 +51,10 @@ class Prediction(Base):
     features_json = Column(JSON)                # полный срез фич канала
     event_flag = Column(Integer, default=0)     # активное событие на бакете
     obs_days = Column(Float)                    # дней с последнего события
+    # 1 = прогноз «закреплён» как метка: на него ссылается решение диспетчера,
+    # такие строки НЕ удаляются при перезапуске реплея и не участвуют в запросах
+    # «текущего бакета» (нужны для дообучения — признаки + метка в одном месте)
+    pinned = Column(Integer, default=0)
     model_version = Column(String(64), nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
@@ -151,12 +156,83 @@ class MaintenanceTask(Base):
     score = Column(Float)
     due_from = Column(DateTime(timezone=True))
     due_to = Column(DateTime(timezone=True))
-    status = Column(String(20), default="suggested")  # suggested|assigned|done|cancelled
+    scheduled_at = Column(DateTime(timezone=True))   # назначенная дата выезда (диспетчер)
+    # suggested|assigned|in_progress|done|cancelled
+    status = Column(String(20), default="suggested")
     assigned_to = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    prediction_id = Column(Integer, ForeignKey("predictions.id"), nullable=True)
+    source = Column(String(20), default="manual")      # auto|decision|manual
+    priority = Column(String(10), default="medium")    # high|medium|low
+    comment = Column(Text)
+    updated_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class Setting(Base):
     __tablename__ = "settings"
     key = Column(String(120), primary_key=True)
     value = Column(JSON)
+
+
+class PushSubscription(Base):
+    """Подписка устройства на Web Push (MOBILE_PLAN §6.3)."""
+    __tablename__ = "push_subscriptions"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    endpoint = Column(Text, nullable=False, unique=True)
+    p256dh = Column(Text, nullable=False)
+    auth = Column(Text, nullable=False)
+    ua = Column(String(200))
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    last_ok_at = Column(DateTime(timezone=True), nullable=True)
+    fails = Column(Integer, nullable=False, default=0)
+
+
+class AlertLog(Base):
+    """Журнал отправленных алертов — серверная замена localStorage-«тишины» notify.js."""
+    __tablename__ = "alert_log"
+    id = Column(Integer, primary_key=True)
+    task = Column(String(20), nullable=False)
+    channel_id = Column(String(64), nullable=False)
+    object_id = Column(String(64), nullable=True)
+    risk_value = Column(Float, nullable=False)
+    kind = Column(String(20), nullable=False, default="push")   # push | inapp
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    sent_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+    __table_args__ = (Index("ix_alert_log_pair", "task", "channel_id", "sent_at"),)
+
+
+class ProcessedAction(Base):
+    """Идемпотентность офлайн-действий (X-Client-Id) — MOBILE_PLAN §4.5."""
+    __tablename__ = "processed_actions"
+    client_id = Column(String(64), primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    path = Column(String(200), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    response = Column(JSON)
+
+
+class Attachment(Base):
+    """Вложения (фото с объекта) — файлы хранятся вне БД, отдаются RBAC-эндпоинтом."""
+    __tablename__ = "attachments"
+    id = Column(Integer, primary_key=True)
+    ticket_id = Column(Integer, ForeignKey("maintenance_tasks.id"), nullable=False, index=True)
+    filename = Column(String(200), nullable=False)
+    mime = Column(String(80), nullable=False)
+    size = Column(Integer, nullable=False)
+    sha256 = Column(String(64), nullable=False)
+    stored_path = Column(String(400), nullable=False)
+    uploaded_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
+def current_only():
+    """Фильтр «прогнозы текущего круга реплея».
+
+    Строки с `pinned=1` — служебные: это признаки, привязанные к решениям диспетчера
+    (метки для дообучения), они сохраняются при перезапуске реплея и НЕ должны попадать
+    в запросы «текущего бакета», историю и тренды.
+    """
+    from sqlalchemy import or_
+    return or_(Prediction.pinned.is_(None), Prediction.pinned != 1)

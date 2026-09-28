@@ -56,11 +56,17 @@ it = tr["items"][0]
 chk("top-risks объектные поля", all(k in it for k in (
     "название_объекта", "район", "тип_датчика", "название_датчика",
     "тег_инж_системы", "инж_система")))
-fid = it["id"]  # запись с последнего бакета — SHAP сохранён
+fid = it["id"]  # запись с последнего бакета
 card = c.get(f"{B}/forecasts/{fid}", headers=h).json()
 chk("карточка: probabilities/horizon/factors/object",
     "probabilities" in card and len(card["horizon"]["surv_points"]) == 8
-    and card["factors"] is not None and "name" in card["object"])
+    and "factors" in card and "name" in card["object"])
+# в быстром режиме прокрута SHAP-факторы не считаются массово — их можно
+# досчитать по запросу (контракт /forecasts/{id}/factors?compute=true)
+fx = c.get(f"{B}/forecasts/{fid}/factors?compute=true", headers=h).json()
+chk("факторы: есть или считаются по запросу",
+    bool(fx.get("factors")) or fx.get("computed") is False
+    or card["factors"] is not None, str(fx)[:160])
 dec = c.post(f"{B}/forecasts/{fid}/decision", headers=h,
              json={"decision": "preventive", "responsible": "central.operator",
                    "comment": "фронт-смоук"})

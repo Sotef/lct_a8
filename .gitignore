@@ -52,3 +52,16 @@ Thumbs.db
 # Logs
 *.log
 D:/temp/
+services/logs/
+services/data/_web_backup/
+
+# --- Docker / TLS (локальные секреты и логи развёртывания) ---
+.env
+services/.env
+services/deploy/certs/*.key
+services/deploy/certs/*.crt
+services/docker_build*.log
+services/docker_up.log
+services/data/_*.txt
+services/data/_*.log
+services/data/attachments/

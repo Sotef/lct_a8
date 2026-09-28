@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 
 import pandas as pd
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .. import models_db as dbm
@@ -104,6 +105,37 @@ def object_risks(db: Session, object_ids: list[str] | None = None,
     return rows
 
 
+def risk7d_by_object(db: Session, object_ids: list[str] | None = None,
+                     buckets_back: int = 12) -> dict:
+    """Максимальный P(событие ≤ 7 дней) по каналам объекта (колонка predictions.p7d).
+
+    Берём последние `buckets_back` бакетов каждой задачи (по умолчанию 12 = 3 суток
+    сим-времени), чтобы объект попадал в раскраску даже если в самом свежем бакете
+    его каналы не были активны. Нужен графу систем и карточкам объектов.
+    """
+    from . import prediction_service as ps
+    out: dict = {}
+    for task in task_cfg.ALL_TASKS:
+        last = ps.latest_bucket_ts(db, task)
+        if last is None:
+            continue
+        since = last - dt.timedelta(hours=6 * max(1, buckets_back))
+        q = (db.query(dbm.Prediction.object_id, func.max(dbm.Prediction.p7d))
+             .filter(dbm.Prediction.task == task,
+                     dbm.Prediction.bucket_ts >= since,
+                     dbm.Prediction.p7d.isnot(None),
+                     dbm.current_only())
+             .group_by(dbm.Prediction.object_id))
+        if object_ids is not None:
+            q = q.filter(dbm.Prediction.object_id.in_(object_ids))
+        for object_id, p7 in q.all():
+            if p7 is None:
+                continue
+            d = out.setdefault(str(object_id), {})
+            d[task] = max(d.get(task, 0.0), round(float(p7), 4))
+    return out
+
+
 def graph_data(db: Session, max_per_hub: int = 40) -> dict:
     """Схема связности: объекты ↔ «пикеты» (p3 из тега инж. системы).
 
@@ -153,10 +185,10 @@ def channel_last_events(db: Session, channel_id: str, n: int = 12) -> list[dict]
     """Последние события канала за 30 дней относительно последнего бакета в БД."""
     from sqlalchemy import func
     last = db.query(func.max(dbm.Prediction.bucket_ts)).filter(
-        dbm.Prediction.channel_id == channel_id).scalar()
+        dbm.Prediction.channel_id == channel_id, dbm.current_only()).scalar()
     since = last - dt.timedelta(days=30) if last is not None else None
     q = (db.query(dbm.Prediction)
-         .filter(dbm.Prediction.channel_id == channel_id))
+         .filter(dbm.Prediction.channel_id == channel_id, dbm.current_only()))
     if since is not None:
         q = q.filter(dbm.Prediction.bucket_ts >= since)
     rows = (q.order_by(dbm.Prediction.bucket_ts.desc()).limit(n).all())

@@ -1,0 +1,50 @@
+/* buttons.css — кнопки, ripple, сегменты, бейджи */
+.btn { position: relative; overflow: hidden; display: inline-flex; align-items: center; justify-content: center;
+  gap: 8px; padding: 10px 18px; border-radius: var(--radius-s); border: 1px solid transparent;
+  background: var(--grad); color: var(--on-accent); font-weight: 700; font-size: 13px; white-space: nowrap;
+  transition: transform .25s var(--ease-spring), box-shadow .3s, filter .2s, opacity .2s; }
+.btn:hover { transform: translateY(-1px); box-shadow: 0 10px 26px -10px var(--accent); }
+.btn:active { transform: translateY(0) scale(.97); }
+.btn.ghost { background: var(--panel); border-color: var(--border); color: var(--text-dim); }
+.btn.ghost:hover { color: var(--text); border-color: var(--border-strong); box-shadow: none; }
+.btn.full { width: 100%; }
+.btn.sm { padding: 6px 12px; font-size: 12px; border-radius: var(--radius-xs); }
+.btn.xs { padding: 3px 9px; font-size: 11px; border-radius: 6px; gap: 5px; }
+.btn.good { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+.btn.dang { background: color-mix(in srgb, var(--bad) 14%, transparent); color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
+.btn.warn { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+.btn.good:hover, .btn.dang:hover, .btn.warn:hover { box-shadow: 0 8px 22px -12px currentColor; }
+.btn:disabled { opacity: .5; cursor: default; transform: none; box-shadow: none; }
+.btn.loading { color: transparent !important; pointer-events: none; }
+.btn.loading::after { content: ""; position: absolute; width: 16px; height: 16px; border-radius: 50%;
+  border: 2px solid var(--text); border-color: var(--text) transparent var(--text) transparent;
+  animation: spin .8s linear infinite; }
+.ripple { position: absolute; border-radius: 50%; transform: scale(0); pointer-events: none;
+  background: currentColor; opacity: .28; animation: ripple .65s var(--ease-out) forwards; }
+
+.seg { position: relative; display: inline-flex; padding: 3px; border: 1px solid var(--border);
+  border-radius: var(--radius-s); background: var(--panel); gap: 2px; }
+.seg button { position: relative; z-index: 1; padding: 6px 12px; background: none; border: 0; color: var(--text-dim);
+  font-weight: 700; font-size: 12px; border-radius: calc(var(--radius-s) - 3px); transition: color .25s;
+  white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
+.seg button.on { color: var(--on-accent); }
+.seg .seg-ind { position: absolute; top: 3px; bottom: 3px; left: 0; width: 0; opacity: 0; border-radius: calc(var(--radius-s) - 3px);
+  background: var(--grad); transition: transform .45s var(--ease-spring), width .45s var(--ease-spring); }
+
+.badge { display: inline-flex; align-items: center; gap: 5px; padding: 1px 9px; border-radius: 999px;
+  font-size: 11px; font-weight: 700; border: 1px solid var(--border); white-space: nowrap; line-height: 1.7; }
+.badge.high { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 50%, transparent);
+  background: color-mix(in srgb, var(--bad) 12%, transparent); }
+.badge.mid { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, transparent);
+  background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.badge.low { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 50%, transparent);
+  background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.badge.info, .badge.active { color: var(--accent-2); border-color: color-mix(in srgb, var(--accent-2) 50%, transparent);
+  background: color-mix(in srgb, var(--accent-2) 10%, transparent); }
+.badge.acc { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.badge.pulse::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor;
+  animation: blink 1.2s infinite; }

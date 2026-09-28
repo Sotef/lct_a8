@@ -1,0 +1,568 @@
+﻿<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>probe</title>
+<link rel="stylesheet" href="/css/themes.css"><link rel="stylesheet" href="/css/core.css">
+<link rel="stylesheet" href="/css/shell.css"><link rel="stylesheet" href="/css/topbar.css">
+<link rel="stylesheet" href="/css/components.css"><link rel="stylesheet" href="/css/buttons.css">
+<link rel="stylesheet" href="/css/widgets.css"><link rel="stylesheet" href="/css/overlays.css">
+<link rel="stylesheet" href="/css/overlays2.css"><link rel="stylesheet" href="/css/pages.css">
+<link rel="stylesheet" href="/css/pages2.css"><link rel="stylesheet" href="/css/anim.css">
+<link rel="stylesheet" href="/css/mobile.css">
+</head>
+<body data-theme="obsidian">
+<div id="app"></div>
+<pre id="probe-out" style="position:fixed;left:0;top:0;z-index:999;font:11px monospace;background:#000;color:#0f0;
+  max-height:40vh;overflow:auto;margin:0;padding:4px;white-space:pre-wrap"></pre>
+<script src="/js/icons.js"></script><script src="/js/ui.js"></script><script src="/js/bgfx.js"></script>
+<script src="/js/fx.js"></script><script src="/js/mobile/offline.js"></script><script src="/js/api.js"></script>
+<script src="/js/mobile/push.js"></script><script src="/js/mobile/photo.js"></script>
+<script src="/js/charts.js"></script>
+<script src="/js/charts2.js"></script><script src="/js/charts3.js"></script><script src="/js/overlays.js"></script>
+<script src="/js/cmdk.js"></script><script src="/js/card_forecast.js"></script><script src="/js/card_object.js"></script>
+<script src="/js/notify.js"></script><script src="/js/view_alerts.js"></script>
+<script src="/js/view_dashboard.js"></script><script src="/js/view_objects.js"></script>
+<script src="/js/view_graph.js"></script><script src="/js/view_forecasts.js"></script><script src="/js/view_plan.js"></script>
+<script src="/js/view_tickets.js"></script><script src="/js/view_audit.js"></script><script src="/js/view_sys.js"></script>
+<script src="/js/view_users.js"></script><script src="/js/login.js"></script><script src="/js/mobile/shell.js"></script>
+<script src="/js/app.js"></script>
+<script>
+/* __probe.html — dev-прогон SPA в headless-браузере: логин, все разделы, карточки, палитра, темы.
+   Результат пишется в #probe-out и в document.title (PROBE OK / PROBE ERR). */
+window.__errs = [];
+addEventListener("error", e => __errs.push("ERR:" + (e.message || "(no msg)")));
+addEventListener("unhandledrejection", e =>
+  __errs.push("REJ:" + ((e.reason && e.reason.message) || String(e.reason))));
+const out = document.getElementById("probe-out");
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const log = s => { out.textContent += s + "\n"; };
+const clean = () => { const t = out.textContent; out.textContent = t.slice(0, 12000); };
+/* детерминированный прогон: гасим периодические таймеры (сим-часы, поллинг, live-обновления),
+   чтобы фоновые перерисовки не конкурировали с шагами пробника.
+   Прогон с живыми таймерами: /__probe.html?timers=1 */
+const WITH_TIMERS = location.search.includes("timers");
+if (!WITH_TIMERS) window.setInterval = () => 0;
+
+/* --- режим аудита интерфейса: /__probe.html?audit=1 — геометрия кнопок и элементы-вырожденцы --- */
+if (location.search.includes("audit")) {
+  window.addEventListener("load", async () => {
+    const log = s => { out.textContent += s + "\n"; };
+    try {
+      const r = await API.post("/auth/login", { username: "central.operator", password: "central123" });
+      API.store.token = r.access_token; API.store.refresh = r.refresh_token; API.store.user = r.user;
+      App.shell();
+      for (const v of ["dashboard"]) {
+        API.invalidate();
+        await App.navigate(v);
+        await sleep(1400);
+        const b = document.querySelector("#pagebox .btn");
+        if (b) {
+          const kids = [...b.children].map(c => `${c.tagName}.${c.className}:${Math.round(c.getBoundingClientRect().height)}x${Math.round(c.getBoundingClientRect().width)}`);
+          log(`DETAIL: vp=${innerWidth}x${innerHeight} btn=${Math.round(b.getBoundingClientRect().height)}px`
+            + ` scrollH=${b.scrollHeight} kids=${kids.join(" | ")} outer="${b.outerHTML.slice(0, 160).replace(/\n/g, " ")}"`);
+          const svg = b.querySelector("svg");
+          if (svg) { const r = svg.getBoundingClientRect(), cs = getComputedStyle(svg);
+            log(`  SVG: ${Math.round(r.width)}x${Math.round(r.height)} w=${cs.width} h=${cs.height} flex=${cs.flex} display=${cs.display} class=${svg.getAttribute("class")}`); }
+          const head = document.querySelector("#pagebox .page-head");
+          if (head) { const r = head.getBoundingClientRect();
+            log(`  page-head: ${Math.round(r.width)}x${Math.round(r.height)} display=${getComputedStyle(head).display} al=${getComputedStyle(head).alignItems}`); }
+          /* цепочка предков с высотами — где возникает 660px */
+          const chain = [];
+          let el = b;
+          while (el && el !== document.documentElement) {
+            const r = el.getBoundingClientRect(), cs2 = getComputedStyle(el);
+            chain.push(`${el.tagName}.${(String(el.className) || "").split(" ")[0]}=${Math.round(r.height)}[${cs2.display}/h:${cs2.height}/al:${cs2.alignItems}/minh:${cs2.minHeight}]`);
+            el = el.parentElement;
+          }
+          log("  CHAIN: " + chain.join(" < "));
+          const h1 = document.querySelector("#pagebox .h1");
+          if (h1) log(`  .h1=${Math.round(h1.getBoundingClientRect().height)}px font=${getComputedStyle(h1).fontSize}`);
+          const tn = [...b.childNodes].find(n => n.nodeType === 3);
+          if (tn) {
+            const rng = document.createRange(); rng.selectNodeContents(tn);
+            const tr = rng.getBoundingClientRect();
+            log(`  TEXT: len=${JSON.stringify(tn.nodeValue).length} box=${Math.round(tr.width)}x${Math.round(tr.height)}`
+              + ` lh=${getComputedStyle(b).lineHeight} fs=${getComputedStyle(b).fontSize} ws=${getComputedStyle(b).whiteSpace}`
+              + ` val="${String(tn.nodeValue).replace(/\s+/g, " ").slice(0, 40)}"`);
+          }
+          log(`  BTN-STYLE: lh=${getComputedStyle(b).lineHeight} fs=${getComputedStyle(b).fontSize}`
+            + ` boxSizing=${getComputedStyle(b).boxSizing} vertAlign=${getComputedStyle(b).verticalAlign}`);
+          /* какие CSS-правила вообще задают высоту/растяжение для этой кнопки и её предков */
+          const hits = [];
+          const probe = [b, b.parentElement, b.parentElement && b.parentElement.parentElement].filter(Boolean);
+          for (const sheet of document.styleSheets) {
+            let rules;
+            try { rules = sheet.cssRules; } catch (e) { continue; }
+            for (const rule of rules) {
+              if (!rule.selectorText || !rule.style) continue;
+              const decl = ["height", "min-height", "max-height", "align-self", "align-items", "flex", "flex-basis", "grid-auto-rows", "line-height", "writing-mode"]
+                .filter(k => rule.style.getPropertyValue(k))
+                .map(k => k + ":" + rule.style.getPropertyValue(k));
+              if (!decl.length) continue;
+              probe.forEach((el, i) => {
+                try { if (el.matches(rule.selectorText)) hits.push(`${i}:${rule.selectorText}{${decl.join(";")}}`); } catch (e) {}
+              });
+            }
+          }
+          log("  CSS-HITS: " + hits.slice(0, 14).join(" | "));
+        }
+      }
+      for (const v of ["forecasts", "plan", "tickets", "objects", "graph", "audit", "sys", "users"]) {
+        API.invalidate();
+        await App.navigate(v);
+        await sleep(1200);
+        /* открываем все оверлеи для проверки? нет — только измеряем видимое */
+        const tall = [];
+        document.querySelectorAll("#pagebox .btn, #pagebox .chip, #pagebox .seg button, #topbar .btn, .modal .btn").forEach(b => {
+          const r = b.getBoundingClientRect();
+          const h = Math.round(r.height);
+          const limit = b.classList.contains("sm") || b.classList.contains("xs") ? 34 : 46;
+          if (h > limit) {
+            const cs = getComputedStyle(b);
+            const p = b.parentElement;
+            const pcs = p ? getComputedStyle(p) : {};
+            tall.push(`${b.textContent.trim().slice(0, 14)}=${h}px w=${Math.round(r.width)}`
+              + ` [${cs.display} h=${cs.height} minh=${cs.minHeight} pad=${cs.paddingTop}/${cs.paddingBottom}`
+              + ` flex=${cs.flex} al=${cs.alignSelf}] parent=${(p.className || p.tagName)}`
+              + `(${pcs.display} al=${pcs.alignItems} h=${pcs.height} w=${pcs.width})`
+              + ` vp=${innerWidth}x${innerHeight}`);
+          }
+        });
+        log(`AUDIT ${v}: кнопок ${document.querySelectorAll("#pagebox .btn").length}, высоких ${tall.length}`);
+        tall.slice(0, 8).forEach(t => log("   " + t));
+      }
+      /* модалка подтверждения: клик по «Да» должен проходить (раньше затемнение перекрывало диалог) */
+      let modalOk = null;
+      const modalP = Overlay.confirm("Проверка модалки", "текст", "Да", "").then(v => { modalOk = v; });
+      await sleep(400);
+      const okBtn = document.querySelector(".modal-wrap .modal .acts button[type=submit]");
+      const veilZ = document.querySelector(".modal-wrap .veil");
+      log("AUDIT modal: submit найден=" + !!okBtn
+        + " z-veil=" + (veilZ ? getComputedStyle(veilZ).zIndex : "-")
+        + " z-modal=" + (document.querySelector(".modal-wrap .modal") ? getComputedStyle(document.querySelector(".modal-wrap .modal")).zIndex : "-"));
+      if (okBtn) okBtn.click();
+      await Promise.race([modalP, sleep(1500)]);
+      log("AUDIT modal: результат=" + modalOk);
+      /* чипы задач: реально ли меняют содержимое пульта и нет ли дублей */
+      const waitFor = async (sel, ms = 25000) => {
+        const t0 = Date.now();
+        while (Date.now() - t0 < ms) {
+          if (document.querySelector(sel)) return true;
+          await sleep(300);
+        }
+        return false;
+      };
+      await App.navigate("dashboard");
+      await waitFor("#pagebox .kpis");
+      await waitFor("#pagebox #seghz");
+      const snap = () => ({
+        kpi: document.querySelectorAll("#pagebox .kpis").length,
+        legend: (document.querySelector("#pagebox .glegend") || {}).textContent || "",
+        top1: (document.querySelector("#pagebox .rlist .ritem .pr") || {}).textContent || "",
+        h1: (document.querySelector("#pagebox .h1") || {}).textContent || "",
+      });
+      const s1 = snap();
+      const chip = [...document.querySelectorAll(".chip")].find(c => c.dataset.t === "fire");
+      if (chip) {
+        chip.click(); await sleep(2000); await waitFor("#pagebox .kpis");
+        const s2 = snap();
+        const boxes = [...document.querySelectorAll("#pagebox")].map((bx, i) =>
+          `#${i}[h1="${((bx.querySelector(".h1") || {}).textContent || "").slice(0, 14)}" kpi=${bx.querySelectorAll(".kpis").length} rl=${bx.querySelectorAll(".rlist").length} conn=${bx.isConnected}]`);
+        log(`AUDIT boxes: pagebox-узлов=${boxes.length} :: ${boxes.join(" | ")}`);
+        log(`AUDIT chips: kpi-блоков=${s2.kpi} (ожидается 1), заголовок="${s2.h1.slice(0, 24)}"`);
+        log(`AUDIT chips: топ до="${s1.top1.trim().slice(0, 30)}" после="${s2.top1.trim().slice(0, 30)}"`
+          + ` | поменялось=${s1.top1 !== s2.top1}`);
+      }
+      /* кнопки горизонта топ-рисков 24ч/72ч/30дн — должны менять числа */
+      const hz = k => [...document.querySelectorAll("#pagebox #seghz button")].find(b => b.dataset.h === k);
+      if (hz("24h") && hz("30d")) {
+        const before = (document.querySelector("#pagebox .rlist .ritem .pr") || {}).textContent || "";
+        hz("24h").click(); await sleep(2000);
+        const mid = (document.querySelector("#pagebox .rlist .ritem .pr") || {}).textContent || "";
+        hz("30d").click(); await sleep(2000);
+        const after = (document.querySelector("#pagebox .rlist .ritem .pr") || {}).textContent || "";
+        log(`AUDIT horizon: 30д="${before.trim().slice(0, 26)}" → 24ч="${mid.trim().slice(0, 26)}"`
+          + ` → 30д="${after.trim().slice(0, 26)}" | 24ч≠30д: ${before !== mid}`);
+      }
+      /* горизонт тренда: 1д/3д/7д/30д — значения должны различаться */
+      const tm = m => [...document.querySelectorAll("#pagebox #tseg button")].find(b => b.dataset.m === m);
+      if (tm("p24") && tm("risk30")) {
+        const legend = () => (document.querySelector("#pagebox .glegend") || {}).textContent || "";
+        tm("risk30").click(); await sleep(1500); await waitFor("#pagebox .glegend");
+        const l30 = legend();
+        tm("p24").click(); await sleep(1500); await waitFor("#pagebox .glegend");
+        const l24 = legend();
+        tm("p7d").click(); await sleep(1500); await waitFor("#pagebox .glegend");
+        const l7 = legend();
+        log(`AUDIT trend: 30д="${l30.trim().slice(0, 46)}"`);
+        log(`AUDIT trend: 24ч="${l24.trim().slice(0, 46)}" | 7д="${l7.trim().slice(0, 46)}"`);
+        log("AUDIT trend: горизонты различаются=" + (l30 !== l24));
+      }
+      /* граф систем: клик по объекту должен открывать карточку объекта */
+      await App.navigate("graph"); await sleep(1500); await waitFor("#pagebox .gnode");
+      const gn = [...document.querySelectorAll("#pagebox .gnode")].find(g => g.dataset.kind === "obj");
+      if (gn) {
+        gn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await sleep(1800);
+        const dr = document.querySelector(".drawer");
+        log("AUDIT graph: клик по объекту → карточка=" + (dr ? "открылась" : "НЕ открылась")
+          + " узлов=" + document.querySelectorAll("#pagebox .gnode").length
+          + " подписей=" + document.querySelectorAll("#pagebox .gnode text").length);
+        Overlay.closeDrawer();
+      } else log("AUDIT graph: узлов объектов нет");
+      /* раскраска графа по направлению: цвет узлов должен меняться при смене ползунка */
+      const colors = () => [...document.querySelectorAll("#pagebox .gnode[data-kind=obj] circle:first-child")]
+        .map(c => c.getAttribute("fill")).join(",");
+      const c1 = colors();
+      /* раскраска графа по направлению: сравниваем wear и sensor (у них есть данные за 7 дней) */
+      const chipOf = t => [...document.querySelectorAll(".chip")].find(c => c.dataset.t === t);
+      const stats = () => {
+        const cs = [...document.querySelectorAll("#pagebox .gnode[data-kind=obj] circle:first-child")]
+          .map(c => c.getAttribute("fill"));
+        return { n: cs.length, colored: cs.filter(x => x !== "transparent").length,
+          green: cs.filter(x => x === "#34d399").length, amber: cs.filter(x => x === "#fbbf24").length,
+          red: cs.filter(x => x === "#f87171").length, sig: cs.join(",") };
+      };
+      const switchTo = async t => {
+        const c = chipOf(t);
+        if (!c) return false;
+        c.click();
+        for (let i = 0; i < 25; i++) { await sleep(400); if (App.state.task === t && document.querySelectorAll("#pagebox .gnode").length) break; }
+        await sleep(600);
+        return true;
+      };
+      await switchTo("wear");
+      const sw = stats();
+      await switchTo("sensor");
+      const ss = stats();
+      log(`AUDIT graph: раскраска wear низк/сред/выс = ${sw.green}/${sw.amber}/${sw.red} (цветных ${sw.colored}/${sw.n})`);
+      log(`AUDIT graph: раскраска sensor низк/сред/выс = ${ss.green}/${ss.amber}/${ss.red} (цветных ${ss.colored}/${ss.n})`
+        + ` | наборы цветов различаются=${sw.sig !== ss.sig}`);
+      document.title = "AUDIT DONE";
+      /* уведомления: порог P(≤7д) ≥ 0.2 и отметка 12ч-тишины по датчику */
+      const r7 = await API.get("/top-risks?task=wear&k=25&horizon=30d").catch(() => ({ items: [] }));
+      const over = (r7.items || []).filter(it => (it.p7d || 0) >= 0.2).length;
+      Notify.resetSilence();
+      await Notify.poll(); await sleep(2500); await Notify.poll(); await sleep(1500);
+      const nlog = Object.keys(JSON.parse(localStorage.getItem("mc_notify_log") || "{}")).length;
+      const second = await Notify.poll(); await sleep(1200);
+      const nlog2 = Object.keys(JSON.parse(localStorage.getItem("mc_notify_log") || "{}")).length;
+      log(`AUDIT notify: датчиков с P(≤7д)≥0.2 = ${over}, отмечено в журнале тишины = ${nlog}`
+        + ` (повторный опрос не меняет: ${nlog === nlog2}), тостов сейчас=${document.querySelectorAll(".toast").length}`);
+      /* шкала тренда риска не должна превышать 100% */
+      await App.navigate("dashboard"); await sleep(2500); await waitFor("#pagebox");
+      const pctTexts = () => [...document.querySelectorAll("#pagebox svg text")]
+        .map(t => (t.textContent || "").trim()).filter(x => x.endsWith("%"));
+      let pcts = pctTexts();
+      for (let i = 0; i < 20 && !pcts.length; i++) { await sleep(500); pcts = pctTexts(); }
+      const nums = pcts.map(x => parseFloat(x)).filter(x => !isNaN(x));
+      const mx = nums.length ? Math.max(...nums) : 0;
+      log(`AUDIT trend: подписи оси = ${pcts.join("|")} → максимум ${mx}% (не выше 100: ${!(mx > 100)})`);
+      /* адаптивный подзаголовок в сайдбаре */
+      const brand = document.querySelector(".brand .nm span");
+      if (brand) {
+        const fs = getComputedStyle(brand).fontSize, w = brand.scrollWidth, cw = brand.clientWidth;
+        log(`AUDIT brand: font-size=${fs} ширина=${w}/${cw} помещается=${w <= cw + 1}`);
+      } else log("AUDIT brand: подзаголовок не найден");
+      /* график обслуживания на «Плане ТО» + дата выезда в карточке заявки */
+      await App.navigate("plan"); await sleep(2500);
+      let sch = null;
+      for (let i = 0; i < 20 && !sch; i++) {
+        await sleep(500);
+        sch = [...document.querySelectorAll("#pagebox .card")].find(c => /График обслуживания/.test(c.textContent));
+      }
+      const rows = sch ? sch.querySelectorAll("tbody tr").length : 0;
+      log(`AUDIT plan: карточка «График обслуживания»=${!!sch} строк=${rows}`);
+      const srow = sch ? sch.querySelector("tbody tr") : null;
+      if (srow) {
+        srow.click(); await sleep(2000);
+        const dr = document.querySelector(".drawer");
+        const inp = dr ? dr.querySelector("input[type=date]") : null;
+        log(`AUDIT plan: клик по строке графика → карточка заявки=${!!dr}, поле даты выезда=${!!inp}`);
+        Overlay.closeDrawer();
+      }
+      /* 1) живое обновление не пересоздаёт DOM (тик/ползунок — «только поля»),
+         2) при переключении направления нет пустого кадра,
+         3) управление фоном (скорость/выключение). */
+      await App.navigate("dashboard"); await sleep(2500); await waitFor("#pagebox .kpis");
+      const box = document.getElementById("pagebox");
+      const kpi0 = box.querySelector(".kpi");
+      const head0 = box.querySelector(".page-head");
+      log(`AUDIT live: box===state.box=${box === App.state.box} children=${box.childNodes.length}`
+        + ` mounted=${box.dataset.mounted}`);
+      await Views.dashboard.render(box, App.state, true);
+      await sleep(600);
+      log(`AUDIT live: тот же бокс=${document.getElementById("pagebox") === box}`
+        + ` children=${box.childNodes.length}`);
+      log(`AUDIT live: KPI-блок сохранён=${box.querySelector(".kpi") === kpi0}`
+        + ` шапка сохранена=${box.querySelector(".page-head") === head0}`
+        + ` mounted=${box.dataset.mounted === "1"}`);
+      let emptied = 0;
+      const mo = new MutationObserver(() => { if (!box.childNodes.length) emptied++; });
+      mo.observe(box, { childList: true });
+      const chipS = [...document.querySelectorAll(".chip")].find(c => c.dataset.t === "sensor");
+      chipS.click();
+      for (let i = 0; i < 25; i++) { await sleep(400); if (box.querySelector(".kpis") && App.state.task === "sensor") break; }
+      await sleep(1200);
+      mo.disconnect();
+      log(`AUDIT live: пустых кадров при переключении направления = ${emptied} (ожидается 0)`);
+      /* график тренда не должен «пропадать» на время пересчёта: старая кривая остаётся,
+         пока не придут новые данные (узел не пересоздаётся, скелетон не подставляется) */
+      const tb0 = document.querySelector("#pagebox #trend-body");
+      const hadSvg = !!(tb0 && tb0.querySelector("svg"));
+      const pRender = Views.dashboard.render(box, App.state, true);
+      const keptNow = !!(tb0 && tb0.querySelector("svg") && tb0.isConnected);
+      const sameNode = document.querySelector("#pagebox #trend-body") === tb0;
+      await pRender; await sleep(2500);
+      log(`AUDIT trend-keep: кривая была=${hadSvg} осталась в момент обновления=${keptNow}`
+        + ` тот же узел=${sameNode} кривая после=${!!document.querySelector("#pagebox #trend-body svg")}`);
+      /* фильтр (рекурсивный рендер раздела) должен обновлять данные в живом контейнере */
+      await App.navigate("forecasts"); await sleep(2000); await waitFor("#pagebox .tbl");
+      const beforeRows = document.querySelectorAll("#pagebox tbody tr").length;
+      const hzSel = document.querySelector("#pagebox #hz");
+      if (hzSel) {
+        hzSel.value = "24h"; hzSel.dispatchEvent(new Event("change"));
+        await sleep(2500);
+        log(`AUDIT filter: строк было=${beforeRows} стало=${document.querySelectorAll("#pagebox tbody tr").length}`
+          + ` таблица жива=${!!document.querySelector("#pagebox .tbl")}`
+          + ` значение селекта=${document.querySelector("#pagebox #hz").value}`);
+      }
+      const bgBefore = BGFX.speed;
+      BGFX.setSpeed(0); await sleep(400);
+      const offCls = document.body.classList.contains("bg-off");
+      BGFX.setSpeed(1); await sleep(400);
+      const onCls = !document.body.classList.contains("bg-off");
+      BGFX.setPulses(false); await sleep(200); const pulsesOff = BGFX.pulses === false;
+      BGFX.setPulses(true);
+      log(`AUDIT bg: выкл=${offCls} вкл=${onCls} импульсы-выкл=${pulsesOff} (было ${bgBefore})`);
+      /* ползунки-индикаторы: позиция сохраняется после мягкого/полного обновления */
+      await App.navigate("objects"); await sleep(2500);
+      const segInfo = () => [...document.querySelectorAll("#pagebox .seg")].map(s => {
+        const ind = s.querySelector(".seg-ind"), on = s.querySelector("button.on");
+        const cs = ind ? getComputedStyle(ind) : null;
+        return { id: s.id || s.className, btns: s.querySelectorAll("button").length,
+          on: on ? on.textContent.trim().slice(0, 12) : null,
+          w: cs ? cs.width : null, op: cs ? cs.opacity : null,
+          tr: ind && ind.style.transform ? ind.style.transform : "",
+          keep: !!(ind && ind.hasAttribute("data-keep")),
+          onW: on ? on.offsetWidth : 0 };
+      });
+      const dbgA = segInfo();
+      log(`AUDIT seg-diag: refreshSliders=${typeof FX.refreshSliders}`
+        + ` html=${(document.querySelector("#pagebox #segmode") || {}).outerHTML ? "есть" : "нет"}`);
+      try { FX.refreshSliders(); } catch (e) { log("AUDIT seg-diag: ERR " + e.message); }
+      await sleep(400);
+      log(`AUDIT seg: после ручного refresh=${JSON.stringify(segInfo())}`);
+      await Views.objects.render(document.getElementById("pagebox"), App.state, true);
+      await sleep(1200);
+      const dbgB = segInfo();
+      log(`AUDIT seg: до=${JSON.stringify(dbgA)}`);
+      log(`AUDIT seg: после=${JSON.stringify(dbgB)}`);
+      /* клик по уведомлению должен вести на ОБЪЕКТ */
+      const shownN = await Notify.demo(2);
+      await sleep(600);
+      Notify.toggle(); await sleep(600);
+      const nitems = document.querySelectorAll(".npanel .nitem");
+      if (nitems.length) {
+        const title = nitems[0].querySelector(".nt").textContent;
+        const wantName = title.split(" · ")[0];
+        nitems[0].click(); await sleep(2200);
+        const dr = document.querySelector(".drawer");
+        const okObj = !!dr && dr.textContent.indexOf(wantName) >= 0;
+        log(`AUDIT notify: показано=${shownN} карточек=${nitems.length} oid=${nitems[0].dataset.oid}`
+          + ` → открыт объект «${wantName}» = ${okObj}`);
+        Overlay.closeDrawer();
+      } else log(`AUDIT notify: панель пуста (demo=${shownN}) — проверка перехода пропущена`);
+      /* канбан: при скрытии «отменённых» оставшиеся колонки делят ширину */
+      await App.navigate("tickets"); await sleep(2200);
+      const kb = document.querySelector("#pagebox .kanban");
+      const cols5 = kb ? getComputedStyle(kb).gridTemplateColumns.split(" ").length : 0;
+      const sc = document.querySelector("#pagebox #sc");
+      if (sc && sc.checked) { sc.checked = false; sc.dispatchEvent(new Event("change")); await sleep(2200); }
+      const kb2 = document.querySelector("#pagebox .kanban");
+      const cols4 = kb2 ? getComputedStyle(kb2).gridTemplateColumns.split(" ").length : 0;
+      const cbW = (document.querySelector("#pagebox .chk input") || {}).offsetWidth || 0;
+      log(`AUDIT kanban: колонок 5→${cols4} (было ${cols5}), чекбокс ${cbW}px, --cols=${kb2 ? kb2.style.getPropertyValue("--cols") : "-"}`);
+      document.title = "AUDIT DONE";
+      for (const vv of ["sys", "users", "dashboard"]) {
+        await App.navigate(vv); await sleep(1800);
+        const bb = document.getElementById("pagebox");
+        log(`AUDIT views: ${vv} nodes=${bb.querySelectorAll("*").length}`
+          + ` cards=${bb.querySelectorAll(".card").length} h1="${(bb.querySelector(".h1") || {}).textContent || "-"}"`
+          + ` | hash=${location.hash} stateView=${App.state.view} sameBox=${bb === App.state.box}`
+          + ` boxes=${document.querySelectorAll("#pagebox").length}`
+          + ` navOn=${(document.querySelector(".nav-item.on") || {}).dataset ? document.querySelector(".nav-item.on").dataset.v : "-"}`
+          + ` err=${!!bb.querySelector(".empty.err-state")}`
+          + ` sboxUsers=${!!(App.state.box && App.state.box.querySelector("#ulist"))}`
+          + ` sboxConn=${!!(App.state.box && App.state.box.isConnected)}`
+          + ` first="${(bb.firstElementChild || {}).className || "-"}"`);
+      }
+      document.title = "AUDIT DONE";
+    } catch (e) { out.textContent += "AUDIT EXC: " + e.message + "\n"; document.title = "AUDIT EXC"; }
+  });
+  document.title = "AUDIT RUN";
+}
+/* основной браузерный прогон SPA (в режиме аудита не запускаем — блоки мешали бы друг другу) */
+if (!location.search.includes("audit")) (async () => {
+  try {
+    const r = await API.post("/auth/login", { username: "central.operator", password: "central123" });
+    API.store.token = r.access_token; API.store.refresh = r.refresh_token; API.store.user = r.user;
+    App.shell();
+    log("SHELL ok: nav=" + document.querySelectorAll(".nav-item").length
+      + " chips=" + document.querySelectorAll(".chip").length
+      + " canvas=" + document.querySelectorAll("#bgfx").length);
+    const VIEWS = ["dashboard", "forecasts", "objects", "graph", "plan", "tickets", "audit", "sys", "users"];
+    for (const v of VIEWS) {
+      API.invalidate();
+      await App.navigate(v);
+      await sleep(1500);
+      const box = document.getElementById("pagebox");
+      const bad = box.querySelector(".empty.err-state");
+      log(`VIEW ${v}: nodes=${box.querySelectorAll("*").length} cards=${box.querySelectorAll(".card").length}`
+        + ` errs=${__errs.length}` + (bad ? " EMPTY-STATE:" + bad.textContent.slice(0, 120) : "")
+        + ` | sameBox=${box === App.state.box} h1="${(box.querySelector(".h1") || {}).textContent || "-"}"`);
+    }
+    const fl = await API.get("/forecasts?task=wear&page=1&size=5");
+    if (fl.items.length) {
+      await Cards.forecast.open(fl.items[0].id);
+      await sleep(1800);
+      const d = document.querySelector(".drawer");
+      log("CARD forecast: " + (d ? "nodes=" + d.querySelectorAll("*").length
+        + " gauge=" + d.querySelectorAll(".gv").length
+        + " probs=" + d.querySelectorAll(".pbox").length
+        + " facbars=" + d.querySelectorAll(".fbar").length
+        + " decbtn=" + d.querySelectorAll(".decgrid button").length : "NOT OPEN"));
+      /* реальное решение диспетчера: «Отклонить» (не меняет данные об угрозе) */
+      const dec = document.querySelector('.drawer .decgrid button[data-v="reject"]');
+      if (dec) {
+        dec.click();
+        await sleep(2200);
+        const hist = document.querySelectorAll(".drawer .timeline .tl-i").length;
+        const toast = (document.querySelector(".toast") || {}).textContent || "";
+        log("DECISION reject: history_items=" + hist + " toast_ok=" + /сохранен/i.test(toast));
+      } else log("DECISION: кнопки решений недоступны для этой роли");
+      Overlay.closeDrawer();
+    }
+    const tr = await API.get("/top-objects?task=wear&k=3&horizon=72h").catch(() => ({ items: [] }));
+    if (tr.items && tr.items.length) {
+      await Cards.object.open(tr.items[0].object_id, { state: App.state, task: "wear" });
+      await sleep(1500);
+      log("CARD object: " + (document.querySelector(".drawer") ? "ok rows="
+        + document.querySelectorAll(".drawer tbody tr").length : "NOT OPEN"));
+      Overlay.closeDrawer();
+    }
+    await App.navigate("tickets"); await sleep(1800);
+    log("KANBAN: kcol=" + document.querySelectorAll(".kcol").length
+      + " tk=" + document.querySelectorAll(".tk").length
+      + " statuses=" + [...document.querySelectorAll(".kcol")].map(c => c.dataset.k + ":" + c.querySelectorAll(".tk").length).join(","));
+    const tk = document.querySelector(".tk");
+    if (tk) {
+      tk.click(); await sleep(1500);
+      log("CARD ticket: " + (document.querySelector(".drawer") ? "ok" : "NOT OPEN"));
+      Overlay.closeDrawer();
+    } else log("CARD ticket: нет карточек заявок (проверьте генерацию)");
+    /* настоящий тест drag&drop: синтетический drop «предложена» -> «назначена» */
+    const srcCol = document.querySelector('.kcol[data-k="suggested"]');
+    const dstCol = document.querySelector('.kcol[data-k="assigned"]');
+    const first = srcCol && srcCol.querySelector(".tk");
+    if (first && dstCol) {
+      const id = first.dataset.id;
+      const dt = { _d: {}, setData(k, v) { this._d[k] = v; }, getData(k) { return this._d[k] || ""; } };
+      const ev = new Event("drop", { bubbles: true, cancelable: true });
+      ev.dataTransfer = dt;
+      dt.setData("text/plain", id);
+      dstCol.dispatchEvent(ev);
+      await sleep(2500);
+      const found = document.querySelectorAll(`.tk[data-id="${id}"]`);
+      const col = found.length ? found[0].closest(".kcol").dataset.k : "-";
+      const assigned = document.querySelectorAll('.kcol[data-k="assigned"] .tk').length;
+      log(`DND drop #${id}: found=${found.length} col=${col} assigned_total=${assigned}`
+        + ` pageboxes=${document.querySelectorAll("#pagebox").length}`);
+    } else log("DND: нет карточек/колонок для теста");
+    /* карта-радар: переключаем режим в разделе «Объекты» */    await App.navigate("objects"); await sleep(1400);
+    log("OBJECTS: pageboxes=" + document.querySelectorAll("#pagebox").length
+      + " list_rows=" + document.querySelectorAll("#pagebox tbody tr").length
+      + " seg=" + document.querySelectorAll("#pagebox .seg").length);
+    const mapBtn = [...document.querySelectorAll("#pagebox .seg button")].find(b => b.dataset.m === "map");
+    if (mapBtn) {
+      mapBtn.click(); await sleep(1800);
+      log("MAP svg: " + (document.querySelector("#mpsvg") ? "ok dots=" + document.querySelectorAll(".omap").length
+        : "не построен"));
+      const lst = [...document.querySelectorAll("#pagebox .seg button")].find(b => b.dataset.m === "list");
+      if (lst) { lst.click(); await sleep(900); }
+    } else log("MAP: кнопка режима не найдена");
+
+    Cmdk.open(() => [{ group: "g", title: "test", run() {} }]);
+    await sleep(900);
+    log("CMDK: " + (document.querySelector(".cmdk") ? "ok" : "FAIL"));
+    Cmdk.close();
+    /* вкладки «Система»: обзор -> live-лог -> модели */
+    await App.navigate("sys"); await sleep(1500);
+    const tabBtn = k => [...document.querySelectorAll("#pagebox .seg button")].find(b => b.dataset.t === k);
+    if (tabBtn("log")) {
+      tabBtn("log").click(); await sleep(2500);
+      log("SYS tab log: console=" + document.querySelectorAll("#pagebox .console").length
+        + " lines=" + document.querySelectorAll("#pagebox .lrow").length
+        + " errs=" + __errs.length);
+      const lvl = document.querySelector("#pagebox #lv");
+      if (lvl) { lvl.value = "ERROR"; lvl.dispatchEvent(new Event("change")); await sleep(2000);
+        log("SYS log filter ERROR: lines=" + document.querySelectorAll("#pagebox .lrow").length); }
+    if (tabBtn("models")) { tabBtn("models").click(); await sleep(1500);
+        log("SYS tab models: rows=" + document.querySelectorAll("#pagebox tbody tr").length); }
+    }
+    /* управление реплеем: вкладка «Обзор» -> пауза -> продолжение (с опросом состояния) */
+    await App.navigate("sys"); await sleep(1500);
+    const tabBtn2 = k => [...document.querySelectorAll("#pagebox .seg button")].find(b => b.dataset.t === k);
+    if (tabBtn2("overview")) { tabBtn2("overview").click(); await sleep(1500); }
+    const waitClock = async pred => {
+      let st = null;
+      for (let i = 0; i < 14; i++) { await sleep(400); st = await API.get("/meta/clock").catch(() => null); if (st && pred(st)) break; }
+      return st;
+    };
+    const btn = k => document.querySelector("#pagebox #c-" + k);
+    if (btn("pause") && btn("step") && btn("reset")) {
+      log("CLOCK controls: 3 кнопки на месте, состояние=" + (btn("pause").textContent.trim().slice(0, 12)));
+      btn("pause").click();
+      const p = await waitClock(s => s.paused);
+      await sleep(600);
+      log("CLOCK pause: paused=" + p.paused + " label=" + (btn("pause") || {}).textContent.trim().slice(0, 12));
+      (btn("pause") || btn("reset")).click();
+      const r2 = await waitClock(s => !s.paused);
+      log("CLOCK resume: paused=" + r2.paused + " label=" + (btn("pause") || {}).textContent.trim().slice(0, 12)
+        + " loop=" + r2.loop);
+      /* скорость: 4× + быстрый расчёт (без SHAP) */
+      const sp4 = [...document.querySelectorAll("#pagebox #c-speed button")].find(b => b.dataset.l === "4");
+      if (sp4) {
+        sp4.click();
+        const s4 = await waitClock(s => s.tick_sec === 20);
+        log("CLOCK speed 4×: tick_sec=" + s4.tick_sec + " speed=" + s4.speed
+          + " buckets_per_hour=" + s4.buckets_per_hour + " full_pass_h=" + s4.full_pass_hours);
+      } else log("CLOCK speed: сегмент уровня не найден");
+      const fchk = document.querySelector("#pagebox #c-fast");
+      if (fchk) {
+        fchk.checked = true; fchk.dispatchEvent(new Event("change"));
+        const sf = await waitClock(s => s.fast === true);
+        log("CLOCK fast: fast=" + sf.fast + " shap_top_k=" + sf.shap_top_k
+          + " hint=" + /быстрый расчёт/.test(document.querySelector("#pagebox").textContent));
+      } else log("CLOCK fast: тумблер не найден");
+    } else log("CLOCK: кнопки управления не найдены");
+    /* гарантия: после прогона реплей должен идти, а не стоять на паузе */
+    const fin = await API.get("/meta/clock").catch(() => null);
+    if (fin && fin.paused) { await API.post("/admin/clock/resume").catch(() => {}); }
+    log("CLOCK final: paused=" + ((await API.get("/meta/clock").catch(() => ({}))).paused));
+    UI.setTheme("terminal"); await sleep(500); UI.setTheme("editorial"); await sleep(500); UI.setTheme("obsidian");
+    Notify.toggle(); await sleep(700);
+    log("NOTIFY: " + (document.querySelector(".npanel") ? "ok" : "FAIL"));
+    Notify.close();
+    log("TOTAL ERRORS: " + __errs.length + (__errs.length ? " :: " + __errs.slice(0, 6).join(" | ") : ""));
+    document.title = __errs.length ? "PROBE ERR " + __errs.length : "PROBE OK";
+  } catch (e) {
+    log("PROBE EXCEPTION: " + (e && e.message));
+    document.title = "PROBE EXCEPTION";
+  }
+  clean();
+})();
+</script>
+</body>
+</html>

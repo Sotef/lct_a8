@@ -59,10 +59,55 @@ STREAM_SOURCE = _p("STREAM_SOURCE", str(EXTRACTED_DIR / "ext-journal-2026.csv"))
 SIM_CLOCK = os.getenv("SIM_CLOCK", "1") == "1"
 SIM_START = os.getenv("SIM_START", "2026-01-01T00:00:00")
 SIM_TICK_REAL_SEC = int(os.getenv("SIM_TICK_REAL_SEC", "75"))
+# SIM_LOOP=1: дойдя до конца периода (panel_max), реплей начинается заново с SIM_START
+# (прогнозы/решения/заявки предыдущего круга сбрасываются) — демо живёт бесконечно.
+SIM_LOOP = os.getenv("SIM_LOOP", "1") == "1"
+
+
+# --- Логирование -----------------------------------------------------------------
+LOG_DIR = _p("LOG_DIR", str(SERVICES_DIR / "logs"))
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+LOG_JSON = os.getenv("LOG_JSON", "1") == "1"                 # JSON lines в файле
+LOG_FILE_MAX_MB = int(os.getenv("LOG_FILE_MAX_MB", "20"))
+LOG_FILE_BACKUPS = int(os.getenv("LOG_FILE_BACKUPS", "5"))
+LOG_BUFFER_SIZE = int(os.getenv("LOG_BUFFER_SIZE", "3000"))  # live-буфер для UI
+SLOW_REQUEST_MS = int(os.getenv("SLOW_REQUEST_MS", "1500"))  # порог WARNING
+# Автоформирование превентивных заявок на каждом сим-тике/цикле прогноза
+AUTO_TICKETS = os.getenv("AUTO_TICKETS", "1") == "1"
+AUTO_TICKETS_MIN_RISK = float(os.getenv("AUTO_TICKETS_MIN_RISK", "0.5"))
+AUTO_TICKETS_TOP_K = int(os.getenv("AUTO_TICKETS_TOP_K", "15"))
+
+# Сколько каналов на задачу получают SHAP-факторы «почему» (самое дорогое место
+# тика: ~43 с на задачу при 400). Уменьшение ускоряет прокрут, но карточки
+# каналов ниже топ-N будут без факторов.
+SHAP_TOP_K = int(os.getenv("SHAP_TOP_K", "400"))
+
+# --- Мобильная версия / PWA (MOBILE_PLAN §6.2) ---------------------------------
+PWA = os.getenv("PWA", "1") == "1"                     # отдавать manifest/SW, включать клиентские фичи
+ALERTS_PUSH = os.getenv("ALERTS_PUSH", "1") == "1"     # серверное правило алертов + рассылка
+ALERTS_MIN_P7D = float(os.getenv("ALERTS_MIN_P7D", "0.2"))
+ALERTS_SILENCE_HOURS = int(os.getenv("ALERTS_SILENCE_HOURS", "12"))
+ALERTS_QUIET_FROM = os.getenv("ALERTS_QUIET_FROM", "")  # «тихие часы» HH:MM (опционально)
+ALERTS_QUIET_TO = os.getenv("ALERTS_QUIET_TO", "")
+ALERTS_TOP_K = int(os.getenv("ALERTS_TOP_K", "50"))    # сколько алертов за тик рассматривать
+
+# Web Push (VAPID). Пусто -> push-subscribe работает, но рассылка — no-op,
+# клиент откатывается на фолбэк-поллинг /alerts (см. MOBILE_PLAN §4.6).
+VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY", "")
+VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "")
+VAPID_SUBJECT = os.getenv("VAPID_SUBJECT", "mailto:ods@moscollector.ru")
+
+# Сессия мобильного профиля (обновление токена живёт дольше на телефоне)
+MOBILE_REFRESH_DAYS = int(os.getenv("MOBILE_REFRESH_DAYS", "30"))
+AUTH_COOKIE_REFRESH = os.getenv("AUTH_COOKIE_REFRESH", "0") == "1"
+
+# Вложения (фото с объекта)
+ATTACH_DIR = _p("ATTACH_DIR", str(DATA_DIR / "attachments"))
+ATTACH_MAX_MB = int(os.getenv("ATTACH_MAX_MB", "5"))
 
 
 def ensure_dirs() -> None:
-    for d in (DATA_DIR, RAW_DIR, PANEL_DIR, EXTRA_DIR):
+    for d in (DATA_DIR, RAW_DIR, PANEL_DIR, EXTRA_DIR, LOG_DIR, ATTACH_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 

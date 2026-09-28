@@ -171,16 +171,38 @@ cd services
 .venv\Scripts\python.exe tests\pipeline_smoke.py wear       # сквозной на реальных данных
 ```
 
-## 8. Развёртывание (прод-контур)
+## 8. Развёртывание и запуск (Docker — самый простой способ)
+
+Весь сервис (PostgreSQL 12+ + API + SPA/PWA) поднимается в Docker; Python, venv и
+локальная БД не нужны:
 
 ```bash
-docker compose up -d postgres
-docker compose run --rm api python scripts/seed.py
-docker compose up -d api
+cd services
+cp .env.docker.example .env          # Windows: copy .env.docker.example .env
+docker compose up -d --build         # первая сборка 2–3 минуты
+# SPA http://127.0.0.1:8000/  ·  Swagger /docs  ·  HTTPS (профиль tls) https://127.0.0.1:8443/
+docker compose exec -T api python scripts/verify_deploy.py   # проверка API по ролям + PWA-раздачи
 ```
 
-Локально — SQLite (default `DATABASE_URL`); прод — PostgreSQL 12+ (`DATABASE_URL=postgresql://...`),
-TLS 1.2+ на reverse-proxy, секреты в `.env`, журнал действий — `audit_log`. Детали — `services/README.md`.
+Демо-пользователи: `central.operator/central123`, `dispatcher.alpha/alpha123`,
+`dispatcher.beta/beta123`, `tech.alpha/tech123`. Остановить — `docker compose down`
+(данные БД сохраняются; `docker compose down -v` — сброс демо).
+
+### Тест на мобильных (телефон/планшет)
+
+1. В той же сети откройте на телефоне `http://<IP компьютера>:8000` — адаптивный UI
+   (нижнее меню, карточки вместо таблиц/канбана, «Ещё», фото с камеры). Порт при
+   необходимости: `netsh advfirewall firewall add rule name="LCT 8000" dir=in action=allow protocol=TCP localport=8000`.
+2. Установка PWA, офлайн-очередь и Web Push требуют *secure context*: на компьютере —
+   `http://127.0.0.1:8000` + DevTools device mode; на телефоне — HTTPS с **доверенным**
+   сертификатом (`docker compose --profile tls up -d --build` → `https://<IP>:8443`).
+3. Автотест мобильного профиля:
+   `docker compose cp app/web/__mprobe.html api:/workspace/services/app/web/__mprobe.html`
+   → `http://127.0.0.1:8000/__mprobe.html?stub=1` (отчёт `MPROBE OK`).
+
+Локально без Docker — SQLite (default `DATABASE_URL`); прод — PostgreSQL 12+,
+TLS 1.2+ на reverse-proxy, секреты в `.env`, журнал действий — `audit_log`.
+Детали — `services/README.md`, мобильная версия — `services/MOBILE_PLAN.md`.
 
 ## 9. Карта документации
 

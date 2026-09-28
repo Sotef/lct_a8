@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>mprobe</title>
+<link rel="stylesheet" href="/css/themes.css"><link rel="stylesheet" href="/css/core.css">
+<link rel="stylesheet" href="/css/shell.css"><link rel="stylesheet" href="/css/topbar.css">
+<link rel="stylesheet" href="/css/components.css"><link rel="stylesheet" href="/css/buttons.css">
+<link rel="stylesheet" href="/css/widgets.css"><link rel="stylesheet" href="/css/overlays.css">
+<link rel="stylesheet" href="/css/overlays2.css"><link rel="stylesheet" href="/css/pages.css">
+<link rel="stylesheet" href="/css/pages2.css"><link rel="stylesheet" href="/css/anim.css">
+<link rel="stylesheet" href="/css/mobile.css">
+</head>
+<body data-theme="obsidian">
+<div id="app"></div>
+<pre id="probe-out" style="position:fixed;left:0;bottom:0;z-index:9999;font:10px monospace;background:#000;color:#0f0;
+  max-height:38vh;overflow:auto;margin:0;padding:4px;white-space:pre-wrap"></pre>
+<script src="/js/icons.js"></script><script src="/js/ui.js"></script><script src="/js/bgfx.js"></script>
+<script src="/js/fx.js"></script><script src="/js/mobile/offline.js"></script><script src="/js/api.js"></script>
+<script src="/js/mobile/push.js"></script><script src="/js/mobile/photo.js"></script>
+<script src="/js/charts.js"></script>
+<script src="/js/charts2.js"></script><script src="/js/charts3.js"></script><script src="/js/overlays.js"></script>
+<script src="/js/cmdk.js"></script><script src="/js/card_forecast.js"></script><script src="/js/card_object.js"></script>
+<script src="/js/notify.js"></script><script src="/js/view_alerts.js"></script>
+<script src="/js/view_dashboard.js"></script><script src="/js/view_objects.js"></script>
+<script src="/js/view_graph.js"></script><script src="/js/view_forecasts.js"></script><script src="/js/view_plan.js"></script>
+<script src="/js/view_tickets.js"></script><script src="/js/view_audit.js"></script><script src="/js/view_sys.js"></script>
+<script src="/js/view_users.js"></script><script src="/js/login.js"></script><script src="/js/mobile/shell.js"></script>
+<script src="/js/app.js"></script>
+<script>
+/* _mprobe.html — проверка мобильного профиля в headless-браузере (размер 360×640). */
+window.__errs = [];
+addEventListener("error", e => __errs.push("ERR:" + (e.message || "?")));
+addEventListener("unhandledrejection", e => __errs.push("REJ:" + ((e.reason && e.reason.message) || e.reason)));
+const out = document.getElementById("probe-out");
+const log = s => { out.textContent += s + "\n"; };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+let fails = 0;
+const chk = (n, c, extra) => { if (!c) { fails++; log("FAIL " + n + (extra ? " :: " + extra : "")); } else log("ok   " + n); };
+
+window.addEventListener("load", async () => {
+  try {
+    log("MODE=" + document.documentElement.dataset.mode + " w=" + innerWidth + "x" + innerHeight);
+    const r = await API.post("/auth/login", { username: "central.operator", password: "central123" });
+    API.store.token = r.access_token; API.store.refresh = r.refresh_token; API.store.user = r.user;
+    document.querySelectorAll(".login-wrap,.veil,.modal-wrap").forEach(n => n.remove());
+    App.shell();
+    MOBILE.enhance(document.getElementById("shell") || document.body, { navigate: App.navigate, pickTask: App.pickTask });
+
+    if (location.search.includes("stub")) {           // синтетические алерты: проверка рендера карточек
+      const origGet = API.get;
+      API.get = (p, ttl) => {
+        if (String(p).startsWith("/alerts")) return Promise.resolve({ min_p7d: 0.2, fallback: true, items: [
+          { id: 101, task: "wear", object_id: "OBJ1", object_name: "Камера 1",
+            sensor_type: "Состояние насоса", sensor_name: "Насос 0", channel_id: "CH0", p7d: 0.71, kind: "live" },
+          { id: 102, task: "fire", object_id: "OBJ2", object_name: "Камера 2",
+            sensor_type: "Дымовой", channel_id: "CH1", p7d: 0.35, sent_at: "2026-03-01T10:00:00" },
+          { id: 103, task: "access", object_id: "OBJ3", object_name: "Камера 3",
+            sensor_type: "Объёмный", channel_id: "CH2", p7d: 0.22 },
+        ] });
+        return origGet(p, ttl);
+      };
+    }
+
+    await App.navigate("alerts"); await sleep(1200);
+    const mnav = document.querySelector(".mnav");
+    chk("bottom nav rendered", !!mnav);
+    chk("bottom nav has 4 items", mnav && mnav.querySelectorAll(".mnav-item").length === 4);
+    chk("bottom nav visible (flex)", mnav && getComputedStyle(mnav).display === "flex");
+    chk("sidebar hidden", getComputedStyle(document.querySelector(".sidebar")).display === "none");
+    const it = mnav && mnav.querySelector(".mnav-item");
+    chk("tap target >= 44px", it && it.getBoundingClientRect().height >= 44,
+      it && Math.round(it.getBoundingClientRect().height));
+    chk("no horizontal overflow", document.documentElement.scrollWidth <= innerWidth + 2,
+      document.documentElement.scrollWidth + ">" + innerWidth);
+    chk("active tab = alerts", mnav && mnav.querySelector(".mnav-item.on") && mnav.querySelector(".mnav-item.on").dataset.v === "alerts");
+
+    const stub = location.search.includes("stub");
+    const mobItems = document.querySelectorAll("#pagebox .m-item").length;
+    const empty = document.querySelectorAll("#pagebox .empty").length;
+    log("alerts: m-item=" + mobItems + " empty=" + empty + " stub=" + stub);
+    chk("alerts cards use mobile markup", stub ? mobItems === 3 : (mobItems > 0 || empty > 0),
+      "m-item=" + mobItems);
+    chk("alerts card has actions", !stub || document.querySelectorAll("#pagebox .m-item .m-item-actions .btn").length >= 3,
+      document.querySelectorAll("#pagebox .m-item .m-item-actions .btn").length);
+    chk("alerts card shows p7d badge", !stub || /0[.,]71/.test(document.querySelector("#pagebox .m-item").textContent));
+    chk("alerts head present", !!document.querySelector("#pagebox .h1"));
+
+    await App.navigate("tickets"); await sleep(1500);
+    chk("tickets: mobile tabs", !!document.querySelector("#pagebox .m-tabs"));
+    chk("tickets: kanban hidden", !document.querySelector("#pagebox .kanban") ||
+      getComputedStyle(document.querySelector("#pagebox .kanban")).display === "none");
+
+    MOBILE.openMore(); await sleep(400);
+    const sheet = document.querySelector(".m-sheet");
+    chk("sheet opens", !!sheet);
+    chk("sheet has sections", sheet && sheet.querySelectorAll(".sheet-item").length >= 4,
+      sheet && sheet.querySelectorAll(".sheet-item").length);
+    chk("sheet has logout", sheet && /выйти/i.test(sheet.textContent));
+    MOBILE.closeMore(); await sleep(300);
+
+    chk("no horizontal overflow after nav", document.documentElement.scrollWidth <= innerWidth + 2,
+      document.documentElement.scrollWidth + ">" + innerWidth);
+    log("ERRORS=" + __errs.length + (__errs.length ? " :: " + __errs.slice(0, 5).join(" | ") : ""));
+    document.title = (fails === 0 && __errs.length === 0) ? "MPROBE OK" : "MPROBE FAIL " + fails + "/" + __errs.length;
+  } catch (e) {
+    log("EXCEPTION: " + (e && e.message));
+    document.title = "MPROBE EXCEPTION";
+  }
+});
+</script>
+</body>
+</html>

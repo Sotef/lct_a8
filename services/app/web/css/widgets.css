@@ -1,0 +1,81 @@
+/* widgets.css — таблицы, формы, списки рисков, скелетоны, пустые состояния */
+table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+.tbl th { position: sticky; top: 0; text-align: left; color: var(--text-faint); font-size: 10.5px; font-weight: 800;
+  text-transform: uppercase; letter-spacing: .09em; padding: 10px 12px; border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel-solid) 88%, transparent); backdrop-filter: blur(8px); z-index: 1;
+  white-space: nowrap; user-select: none; }
+.tbl th.sortable { cursor: pointer; } .tbl th.sortable:hover { color: var(--text); }
+.tbl td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.tbl tr:last-child td { border-bottom: 0; }
+.tbl tr.rrow { cursor: pointer; transition: background .2s; }
+.tbl tr.rrow:hover td { background: var(--panel-hover); }
+.tbl tr.rrow td:first-child { position: relative; }
+.tbl tr.rrow:hover td:first-child::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px;
+  width: 3px; border-radius: 3px; background: var(--grad); }
+.tbl .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.tscroll { max-height: 660px; overflow: auto; }
+
+.fld { margin-bottom: 14px; }
+.fld label { display: block; font-size: 11px; font-weight: 750; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: .08em; margin-bottom: 6px; }
+.inp, .fld input, .fld select, .fld textarea, .toolrow input, .toolrow select {
+  width: 100%; padding: 10px 12px; border-radius: var(--radius-s); border: 1px solid var(--border);
+  background: var(--bg-2); outline: none; transition: border-color .2s, box-shadow .2s; }
+.inp:focus, .fld input:focus, .fld select:focus, .fld textarea:focus,
+.toolrow input:focus, .toolrow select:focus {
+  border-color: var(--accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 18%, transparent); }
+textarea.inp, .fld textarea { resize: vertical; min-height: 64px; }
+/* .toolrow — только ПРЯМЫЕ дети участвуют в раскладке строки фильтров:
+   иначе чекбоксы внутри <label class="chk"> получали min-width:150px и разъезжались */
+.toolrow { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+.toolrow > input, .toolrow > select { width: auto; min-width: 150px; padding: 8px 12px; }
+.toolrow > input[type="search"] { min-width: 240px; }
+.toolrow .chk { flex: 0 0 auto; white-space: nowrap; }
+.err { color: var(--bad); font-size: 12.5px; margin-top: 8px; min-height: 16px; }
+.chk { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-dim); cursor: pointer; }
+.chk input { accent-color: var(--accent); width: 16px; height: 16px; min-width: 0; flex: 0 0 16px; }
+.note { font-size: 11.5px; color: var(--text-faint); border: 1px dashed var(--border);
+  border-radius: var(--radius-s); padding: 9px 12px; margin-top: 12px; line-height: 1.55; }
+.note b { color: var(--text-dim); }
+
+.rlist { display: flex; flex-direction: column; gap: 8px; }
+.ritem { position: relative; display: flex; align-items: center; gap: 14px; padding: 12px 14px;
+  border: 1px solid var(--border); border-radius: var(--radius-s); background: var(--panel); cursor: pointer;
+  overflow: hidden; transition: border-color .25s, transform .35s var(--ease-spring), background .25s; }
+.ritem:hover { border-color: var(--border-strong); transform: translateX(4px); background: var(--panel-hover); }
+.ritem .rank { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); width: 18px; text-align: right; }
+.ritem .mid { flex: 1; min-width: 0; }
+.ritem .obj { font-weight: 700; font-size: 13px; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ritem .obj .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ritem .sen { color: var(--text-dim); font-size: 12px; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; margin-top: 2px; }
+.ritem .pr { text-align: right; font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+.ritem .pr b { display: block; font-size: 15px; color: var(--text); font-family: var(--font-mono); }
+.ritem .go { opacity: 0; transform: translateX(-6px); transition: all .3s var(--ease-out); color: var(--text-dim); }
+.ritem:hover .go { opacity: 1; transform: none; }
+.rbar { height: 4px; border-radius: 3px; background: var(--bg-2); overflow: hidden; margin-top: 8px; }
+.rbar i { display: block; height: 100%; border-radius: 3px; width: 0; transition: width 1.1s var(--ease-out); }
+
+.skel { position: relative; overflow: hidden; background: var(--panel-2); border-radius: var(--radius-s); }
+.skel::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--text) 8%, transparent), transparent);
+  animation: shimmer 1.4s infinite; }
+.table-sort-arr, th .arr { opacity: .5; margin-left: 4px; font-size: 10px; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 12.5px; }
+.kv dt { color: var(--text-dim); }
+.kv dd { text-align: right; font-family: var(--font-mono); }
+
+/* --- хук-классы SVG-графиков (анимируются через inline-стили/JS) --- */
+.gw { flex: 0 0 auto; }
+.gv { font-variant-numeric: tabular-nums; }
+.xh line { stroke-dasharray: 3 3; }
+.hit { cursor: crosshair; }
+.arc, .needle { will-change: transform, stroke-dashoffset; }
+.needle { transform-box: fill-box; }
+.svp circle { transform-box: fill-box; transform-origin: center; }
+.vp, #mpsvg { will-change: transform; }
+.skel-grid { display: grid; gap: 14px; }
+.empty { display: flex; flex-direction: column; align-items: center; gap: 10px; color: var(--text-faint);
+  text-align: center; padding: 34px 20px; font-size: 13px; }
+.empty .ico { width: 34px; height: 34px; opacity: .6; }
+.empty.err-state { color: var(--bad); }

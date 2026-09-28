@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 
 import numpy as np
 import pandas as pd
@@ -15,11 +16,14 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .. import task_cfg
+from .. import config
 from .. import models_db as dbm
 from ..adapters.journal import bucket_to_timestamp
 from . import feature_pipeline as fp
 from . import inference as inf
 from . import ml_registry
+
+log = logging.getLogger("prediction")
 
 
 def _bucket_ts(bucket: int) -> dt.datetime:
@@ -73,7 +77,8 @@ def compute_and_store_bucket(task: str, bucket: int, db: Session,
 
     db.query(dbm.Prediction).filter(
         dbm.Prediction.task == task,
-        dbm.Prediction.bucket_ts == _bucket_ts(bucket)).delete()
+        dbm.Prediction.bucket_ts == _bucket_ts(bucket),
+        dbm.current_only()).delete()
     # ВАЖНО: коммит сразу — иначе write-lock SQLite держится весь долгий
     # инференс и параллельные записи (audit_log при логине и т.п.) падают
     # с "database is locked".
@@ -84,12 +89,15 @@ def compute_and_store_bucket(task: str, bucket: int, db: Session,
     surv_pts = inf.surv_points_from(S)
     # P(событие ≤ 72ч) = 1 - S(12-й 6ч-бакет); выровнено с bucket_rows (до сортировки)
     p72_all = (1.0 - S[:, 11]) if (S.ndim == 2 and S.shape[1] > 11) else None
+    # P(событие ≤ 7 дней): 28-й шаг 6ч-сетки (7*4), индекс 27
+    p7d_all = (1.0 - S[:, 27]) if (S.ndim == 2 and S.shape[1] > 27) else None
 
-    # SHAP: только топ-400 по score (карточки выше списка всегда с факторами,
-    # массовый пересчёт истории не деградирует по времени)
+    # SHAP: только топ-N по score (карточки верхних рисков всегда с факторами).
+    # SHAP — самое дорогое место тика (~43 с на задачу при N=400); SHAP_TOP_K
+    # позволяет ускорить пересчёт, оставив факторы для верхушки списка.
     shap_map: dict = {}
     if with_factors and len(rb):
-        top_orig = [int(x) for x in list(rb.index[:400])]
+        top_orig = [int(x) for x in list(rb.index[:config.SHAP_TOP_K])]
         shap_list = shap_factors_batch(task, bucket_rows.iloc[top_orig])
         shap_map = dict(zip(top_orig, shap_list))
 
@@ -106,6 +114,7 @@ def compute_and_store_bucket(task: str, bucket: int, db: Session,
             bucket_ts=_bucket_ts(bucket),
             p24=_f(row["p24"]),
             p72=_f(p72_all[orig]) if p72_all is not None else None,
+            p7d=_f(p7d_all[orig]) if p7d_all is not None else None,
             risk30=_f(row["risk30"]),
             risk30_cal=_f(row["risk30_cal"]),
             exp_days=_f(row["exp_days"]),
@@ -126,6 +135,49 @@ def compute_and_store_bucket(task: str, bucket: int, db: Session,
             "bucket_ts": str(_bucket_ts(bucket)),
             "n_subjects": int(len(bucket_rows)),
             "n_stored": len(rows)}
+
+
+def compute_factors_for_prediction(db: Session, pred: dbm.Prediction,
+                                   top_k: int = 8) -> list[dict] | None:
+    """SHAP-факторы «почему» для одного прогноза (если их не посчитали на тике).
+
+    В быстром режиме прокрута факторы не считаются массово; здесь они считаются
+    по запросу карточки: субъекты задачи берутся из панели (кэш в памяти), для
+    одной строки SHAP занимает доли секунды. Результат сохраняется в прогнозе.
+    """
+    if pred.factors:
+        return pred.factors
+    subs = _subject_cache(pred.task)
+    if subs is None:
+        return None
+    # бакет из bucket_ts: та же эпоха, что в features/bucket_of (naive -> UTC-шкала)
+    bucket = int(pd.Timestamp(pred.bucket_ts).value // (6 * 3600 * 10 ** 9))
+    rows = subs[(subs["бакет"] == bucket)
+                & (subs["ид_канала_данных"].astype(str) == str(pred.channel_id))]
+    if not len(rows):
+        return None
+    try:
+        factors = shap_factors_batch(pred.task, rows.iloc[:1], top_k=top_k)[0]
+    except Exception:  # noqa: BLE001
+        log.exception("не удалось посчитать факторы для прогноза %s", pred.id)
+        return None
+    pred.factors = factors
+    db.commit()
+    return factors
+
+
+_SUBJ_CACHE: dict = {}
+
+
+def _subject_cache(task: str):
+    """Субъекты задачи из панели (ленивая загрузка, без пересборки панели)."""
+    if task not in _SUBJ_CACHE:
+        try:
+            _SUBJ_CACHE[task] = fp.build_subjects(task, recompute_panel=False)
+        except Exception:  # noqa: BLE001
+            log.exception("не удалось собрать субъекты задачи %s", task)
+            return None
+    return _SUBJ_CACHE[task]
 
 
 def shap_factors_batch(task: str, subjects: pd.DataFrame,
@@ -156,6 +208,14 @@ def shap_factors_batch(task: str, subjects: pd.DataFrame,
         return out
 def _pred_to_item(p: dbm.Prediction, sensor_type=None, sensor_name=None,
                   obj=None, tag=None, system_type=None):
+    sp = p.surv_points or []
+    p7d = p.p7d
+    if p7d is None and len(sp) >= 6:
+        # старые записи: колонки p7d ещё не было — считаем из S(t)
+        try:
+            p7d = 1.0 - float(sp[5])          # 7 дней — 6-я точка S(t)
+        except (TypeError, ValueError):
+            p7d = None
     return {
         "id": p.id,
         "ид_канала_данных": p.channel_id,
@@ -174,6 +234,8 @@ def _pred_to_item(p: dbm.Prediction, sensor_type=None, sensor_name=None,
         "scale": p.scale,
         "p24": p.p24,
         "p72": p.p72,
+        "p7d": round(p7d, 6) if p7d is not None else None,
+        "p7d": _p7d(p.surv_points),
         "risk30": p.risk30,
         "risk30_cal": p.risk30_cal,
         "risk_used": p.risk30_cal if p.risk30_cal is not None else p.risk30,
@@ -185,10 +247,24 @@ def _pred_to_item(p: dbm.Prediction, sensor_type=None, sensor_name=None,
     }
 
 
+def _p7d(surv_points) -> float | None:
+    """P(событие ≤ 7 дней) = 1 − S(7д); 7 дней — 6-я точка [6ч,12ч,24ч,48ч,3д,7д,14д,30д]."""
+    try:
+        if not surv_points or len(surv_points) < 6:
+            return None
+        return round(1.0 - float(surv_points[5]), 6)
+    except (TypeError, ValueError):
+        return None
+
+
 def latest_bucket_ts(db: Session, task: str):
-    """Максимальный bucket_ts хранимых прогнозов задачи (datetime | None)."""
+    """Максимальный bucket_ts хранимых прогнозов задачи (datetime | None).
+
+    Служебные «закреплённые» строки (метки решений, `pinned=1`) не учитываются —
+    иначе после перезапуска реплея текущим считался бы бакет прошлого круга.
+    """
     return db.query(func.max(dbm.Prediction.bucket_ts)).filter(
-        dbm.Prediction.task == task).scalar()
+        dbm.Prediction.task == task, dbm.current_only()).scalar()
 
 
 def top_risks(task: str, k: int = 200, active_only: bool = False,
@@ -239,7 +315,7 @@ def forecasts_list(task: str, object_id: str | None = None,
                    bucket: int | None = None, db: Session = None,
                    object_ids: list[str] | None = None,
                    horizon: str = "30d") -> dict:
-    q = db.query(dbm.Prediction).filter(dbm.Prediction.task == task)
+    q = db.query(dbm.Prediction).filter(dbm.Prediction.task == task, dbm.current_only())
     if object_id:
         q = q.filter(dbm.Prediction.object_id == object_id)
     if object_ids is not None:

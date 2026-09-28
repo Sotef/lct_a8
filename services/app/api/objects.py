@@ -17,6 +17,12 @@ router = APIRouter(prefix="/objects", tags=["objects"])
 @router.get("")
 def objects(db: Session = Depends(get_db),
             user: dbm.User = Depends(require_roles("dispatcher", "central", "tech"))):
+    """Дерево объектов + риски.
+
+    `risks` — материализация L2 (risk30 по каналам, история), `risk7d` — прогноз
+    P(событие ≤ 7 дней) максимумом по каналам объекта за последние 3 суток прогнозов:
+    именно его показывает карта/список, чтобы «не долбить» месячным risk30.
+    """
     allowed = scoped_object_ids(user, db)
     tree = object_service.object_tree(db, object_ids=allowed)
     risks = object_service.object_risks(db, object_ids=allowed)
@@ -25,8 +31,10 @@ def objects(db: Session = Depends(get_db),
         risk_by_obj.setdefault(r["object_id"], {})[r["task"]] = {
             "risk30_max": r["risk30_max"], "risk30_mean": r["risk30_mean"],
             "channel_count": r["channel_count"], "top_channels": r["top_channels"]}
+    r7 = object_service.risk7d_by_object(db, object_ids=allowed)
     for node in tree["tree"]:
         node["risks"] = risk_by_obj.get(node["object_id"], {})
+        node["risk7d"] = r7.get(str(node["object_id"]), {})
     return tree
 
 
@@ -34,9 +42,16 @@ def objects(db: Session = Depends(get_db),
 def objects_graph(db: Session = Depends(get_db),
                   user: dbm.User = Depends(
                       require_roles("dispatcher", "central", "tech"))):
-    """Схема связности объектов и пикетов (для «Графа систем»)."""
+    """Схема связности объектов и пикетов (для «Графа систем»).
+
+    Каждому узлу добавляется `risk7d` — P(событие ≤ 7 дней) по направлениям
+    (максимум по каналам объекта на актуальном бакете) для раскраски графа.
+    """
     allowed = scoped_object_ids(user, db)
     data = object_service.graph_data(db)
+    r7 = object_service.risk7d_by_object(db, object_ids=allowed)
+    for node in data.get("nodes", []):
+        node["risk7d"] = r7.get(str(node["id"]), {})
     if allowed is not None:
         keep = set(allowed)
         data["nodes"] = [n for n in data["nodes"] if n["id"] in keep]

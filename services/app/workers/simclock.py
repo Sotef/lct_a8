@@ -33,10 +33,18 @@ _state: dict = {
     "bucket": None, "panel_max": None, "tick_sec": config.SIM_TICK_REAL_SEC,
     "last_tick": None, "next_tick": None, "running": False,
     "computing": False, "error": None, "last_counts": None,
+    "paused": False,          # пауза реплея (см. pause()/resume())
+    "step_budget": None,      # ручной шаг: сколько бакетов просчитать без ожидания тика
+    "step_restore_paused": False,
+    "fast": False,            # быстрый расчёт: без SHAP-факторов (~×100 к скорости тика)
+    "parallel": False,        # задачи параллельно (обычно не ускоряет: узкое место — SHAP)
+    "last_tick_sec": None,    # сколько занял последний тик (реальное время)
 }
 _subjects: dict = {}
 _models: dict = {}
+_warm_lock = threading.Lock()
 _stop = threading.Event()
+_wake = threading.Event()     # досрочное пробуждение цикла (шаг/сброс/пауза)
 _thread: threading.Thread | None = None
 _db = None  # сессия текущего тика
 
@@ -65,15 +73,47 @@ def _settings_set(db, key: str, value) -> None:
 
 
 def _fresh_start(db) -> int:
-    """Сброс старого реплея и установка стартового сим-бакета (01.01.2026 00:00)."""
+    """Сброс старого реплея и установка стартового сим-бакета (01.01.2026 00:00).
+
+    Перезапуск круга касается **только прогнозов** — они воспроизводимы.
+    Человеческие данные сохраняются:
+      * решения диспетчера остаются как есть; прогнозы, на которые они ссылаются,
+        помечаются `pinned=1` (признаки + метка для дообучения) и исключаются из
+        запросов «текущего бакета» (`latest_bucket_ts` и др.);
+      * заявки, которых коснулся человек (назначены/в работе/выполнены/отменены, созданы
+        вручную или решением «профилактика», с датой выезда/исполнителем/комментарием),
+        сохраняются; у них снимается ссылка на удалённый прогноз — риск, срок, план и
+        приоритет остаются в самой заявке;
+      * удаляются только необработанные предложения автоформирования
+        (source='auto', status='suggested', без исполнителя/даты/комментария): модель
+        воспроизведёт их на новом круге, а иначе они бы блокировали создание новых
+        предложений по тем же каналам;
+      * журнал аудита не трогается никогда.
+    """
+    from sqlalchemy import and_, not_
     start = bucket_of(dt.datetime.fromisoformat(config.SIM_START))
-    n_pred = db.query(dbm.Prediction).delete()
-    db.query(dbm.Decision).delete()
-    db.query(dbm.MaintenanceTask).delete()
+    T = dbm.MaintenanceTask
+    machine = and_(T.source == "auto", T.status == "suggested",
+                   T.assigned_to.is_(None), T.scheduled_at.is_(None), T.comment.is_(None))
+    # 1) прогнозы, на которые ссылаются решения, «закрепляем» (метки для дообучения)
+    pinned_ids = [r[0] for r in db.query(dbm.Decision.prediction_id).distinct().all() if r[0]]
+    n_pinned = 0
+    if pinned_ids:
+        n_pinned = (db.query(dbm.Prediction)
+                    .filter(dbm.Prediction.id.in_(pinned_ids))
+                    .update({"pinned": 1}, synchronize_session=False))
+    # 2) человеческие заявки сохраняем, снимая ссылку на удаляемый прогноз
+    n_keep = (db.query(T).filter(not_(machine))
+              .update({"prediction_id": None}, synchronize_session=False))
+    n_machine = db.query(T).filter(machine).delete(synchronize_session=False)
+    # 3) прогнозы без метки удаляются — реплей пересчитает их на новом круге
+    #    (условие current_only защищает и от строк с NULL в pinned)
+    n_pred = db.query(dbm.Prediction).filter(dbm.current_only()).delete(synchronize_session=False)
     _settings_set(db, "sim_bucket", start)
     db.commit()
-    log.info("sim-clock fresh start: bucket=%s (%s), wiped predictions=%s",
-             start, ts_of(start), n_pred)
+    log.info("sim-clock fresh start: bucket=%s (%s); predictions wiped=%s pinned=%s; "
+             "tickets kept=%s, machine suggestions removed=%s; решения и аудит сохранены",
+             start, ts_of(start), n_pred, n_pinned, n_keep, n_machine)
     return start
 
 
@@ -98,18 +138,38 @@ def _warm(task: str):
 
 
 def _compute_bucket(bucket: int) -> dict:
-    out = {}
-    for task in TASKS:
-        try:
+    """Прогноз всех задач на бакете. `parallel` — задачи параллельно (CatBoost
+    отпускает GIL), `fast` — без SHAP-факторов (в карточке будет честная пометка)."""
+    with_factors = not _state["fast"]
+    tasks = list(TASKS)
+    if not _state["parallel"] or len(tasks) == 1:
+        out = {}
+        for task in tasks:
+            out[task] = _compute_task(task, bucket, with_factors)
+        return out
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=len(tasks), thread_name_prefix="tick") as ex:
+        return dict(ex.map(lambda t: (t, _compute_task(t, bucket, with_factors)), tasks))
+
+
+def _compute_task(task: str, bucket: int, with_factors: bool):
+    db = SessionLocal()
+    try:
+        with _warm_lock:
             _warm(task)
-            res = prediction_service.compute_and_store_bucket(
-                task, bucket, _db, _models, subjects=_subjects[task],
-                with_factors=True)
-            out[task] = res.get("n_stored", 0)
-        except Exception as exc:  # noqa: BLE001
-            log.exception("tick %s task %s failed", bucket, task)
-            out[task] = f"error: {exc}"
-    return out
+        res = prediction_service.compute_and_store_bucket(
+            task, bucket, db, _models, subjects=_subjects[task],
+            with_factors=with_factors)
+        if not res.get("n_subjects"):
+            log.warning("bucket %s task %s: субъектов нет — панель не покрывает бакет "
+                        "(пересоберите панели: scripts/run_demo.py --recompute-panel)",
+                        bucket, task)
+        return res.get("n_stored", 0)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("tick %s task %s failed", bucket, task)
+        return f"error: {exc}"
+    finally:
+        db.close()
 
 
 def _loop() -> None:
@@ -123,19 +183,45 @@ def _loop() -> None:
     finally:
         db.close()
     _state["panel_max"] = _panel_max_bucket()
-    log.info("sim-clock started: bucket=%s (%s), panel_max=%s (%s), tick=%ss",
+    _load_options()
+    log.info("sim-clock started: bucket=%s (%s), panel_max=%s (%s), tick=%ss, loop=%s, "
+             "fast_factors=%s, parallel=%s",
              _state["bucket"], ts_of(_state["bucket"]), _state["panel_max"],
-             ts_of(_state["panel_max"]), _state["tick_sec"])
+             ts_of(_state["panel_max"]), _state["tick_sec"], config.SIM_LOOP,
+             _state["fast"], _state["parallel"])
 
     while not _stop.is_set():
+        if _state["paused"] and _state["step_budget"] is None:
+            _state["next_tick"] = None
+            if _sleep(1.0):
+                break
+            continue
         _state["computing"] = True
         t0 = time.time()
         try:
             _db = SessionLocal()
             counts = _compute_bucket(_state["bucket"])
             _settings_set(_db, "sim_bucket", _state["bucket"])
+            if config.AUTO_TICKETS:
+                try:
+                    from ..services import maintenance_service
+                    res = maintenance_service.auto_generate(_db)
+                    counts["tickets"] = res["created"]
+                except Exception:  # noqa: BLE001
+                    log.exception("auto tickets failed")
+            if config.ALERTS_PUSH:
+                try:
+                    from . import alerts as alerts_worker
+                    ar = alerts_worker.run(_db)
+                    counts["alerts"] = ar.get("fired")
+                    counts["pushed"] = ar.get("pushed")
+                except Exception:  # noqa: BLE001
+                    log.exception("alerts rule failed")
+            log.info("tick bucket=%s (%s) done in %.1fs: %s", _state["bucket"],
+                     ts_of(_state["bucket"]), time.time() - t0, counts)
             _state["last_counts"] = counts
             _state["last_tick"] = time.time()
+            _state["last_tick_sec"] = round(time.time() - t0, 1)
             _state["error"] = None
         except Exception as exc:  # noqa: BLE001
             log.exception("tick failed")
@@ -146,14 +232,168 @@ def _loop() -> None:
                 _db = None
             _state["computing"] = False
 
+        # ручной шаг из UI/API: сразу следующий бакет, без ожидания тика
+        if _state["step_budget"] is not None:
+            _state["step_budget"] -= 1
+            if _state["step_budget"] <= 0:
+                _state["step_budget"] = None
+                _state["paused"] = _state["step_restore_paused"]
+                _state["step_restore_paused"] = False
+            if _state["bucket"] >= _state["panel_max"]:
+                if config.SIM_LOOP:
+                    _restart_replay()
+                else:
+                    _state["next_tick"] = None
+            else:
+                _state["bucket"] += 1
+            continue
+
         if _state["bucket"] >= _state["panel_max"]:
-            _state["next_tick"] = None
-            _stop.wait(60)      # данные реплея закончились — idle
+            if not config.SIM_LOOP:
+                _state["next_tick"] = None
+                if _sleep(60):      # данные реплея закончились — idle
+                    break
+                continue
+            _restart_replay()       # конец периода: цикл с января
             continue
 
         _state["next_tick"] = time.time() + _state["tick_sec"]
-        _stop.wait(max(1.0, _state["tick_sec"] - (time.time() - t0)))
+        if _sleep(max(1.0, _state["tick_sec"] - (time.time() - t0))):
+            break
         _state["bucket"] += 1
+
+
+def _now_ts() -> str:
+    """Текущее сим-время строкой (или «—», если цикл ещё не инициализирован)."""
+    b = _state["bucket"]
+    return ts_of(b) if b is not None else "—"
+
+
+# --- параметры прокрута (скорость демо) ---------------------------------------
+SPEED_LEVELS = {1: 75, 2: 40, 4: 20, 8: 10}     # уровень -> интервал тика, сек
+
+
+def _load_options() -> None:
+    """Восстанавливает скорость прокрута из settings (переживает рестарт)."""
+    db = SessionLocal()
+    try:
+        opts = _settings_get(db, "sim_options") or {}
+    except Exception:  # noqa: BLE001
+        opts = {}
+    finally:
+        db.close()
+    if isinstance(opts, dict):
+        if opts.get("tick_sec"):
+            _state["tick_sec"] = int(opts["tick_sec"])
+        _state["fast"] = bool(opts.get("fast", _state["fast"]))
+        _state["parallel"] = bool(opts.get("parallel", _state["parallel"]))
+
+
+def _save_options() -> None:
+    db = SessionLocal()
+    try:
+        _settings_set(db, "sim_options", {"tick_sec": _state["tick_sec"],
+                                          "fast": _state["fast"],
+                                          "parallel": _state["parallel"]})
+    except Exception:  # noqa: BLE001
+        log.exception("не удалось сохранить sim_options")
+    finally:
+        db.close()
+
+
+def set_speed(tick_sec: int | None = None, fast: bool | None = None,
+              parallel: bool | None = None) -> dict:
+    """Скорость демо-прокрута: интервал тика, отказ от SHAP и параллельный расчёт."""
+    if tick_sec is not None:
+        _state["tick_sec"] = max(1, min(3600, int(tick_sec)))
+    if fast is not None:
+        _state["fast"] = bool(fast)
+    if parallel is not None:
+        _state["parallel"] = bool(parallel)
+    _save_options()
+    _wake.set()      # применим новый интервал немедленно
+    log.info("sim-clock speed: tick=%ss, fast_factors=%s, parallel=%s",
+             _state["tick_sec"], _state["fast"], _state["parallel"])
+    return clock_status()
+
+
+def set_speed_level(level: int, fast: bool | None = None,
+                    parallel: bool | None = None) -> dict:
+    """Уровень демо-скорости 1×/2×/4×/8× (см. SPEED_LEVELS)."""
+    lv = int(level)
+    if lv not in SPEED_LEVELS:
+        lv = min(SPEED_LEVELS, key=lambda k: abs(k - lv))
+    return set_speed(tick_sec=SPEED_LEVELS[lv], fast=fast, parallel=parallel)
+
+
+def speed_level() -> int:
+    """Ближайший настроенный уровень скорости (1/2/4/8) для интервала тика."""
+    tick = _state["tick_sec"] or SPEED_LEVELS[1]
+    return min(SPEED_LEVELS, key=lambda k: abs(SPEED_LEVELS[k] - tick))
+
+
+def _sleep(sec: float) -> bool:
+    """Пауза цикла: прерывается досрочно по сигналу (_wake). True — пора останавливаться."""
+    _wake.wait(max(0.05, sec))
+    _wake.clear()
+    return _stop.is_set()
+
+
+def _restart_replay() -> int:
+    """Новый круг реплея: пересчёт прогнозов с SIM_START.
+
+    Решения диспетчера, заявки, которых коснулся человек, и журнал аудита сохраняются
+    (см. `_fresh_start`) — удаляются только прогнозы и необработанные предложения модели.
+    """
+    global _db
+    db = SessionLocal()
+    try:
+        b = _fresh_start(db)
+    finally:
+        db.close()
+    _state["bucket"] = int(b)
+    _state["last_counts"] = None
+    _state["error"] = None
+    log.info("replay cycle finished — restart from %s (%s), loop=%s",
+             b, ts_of(b), config.SIM_LOOP)
+    return int(b)
+
+
+def reset() -> dict:
+    """Перезапустить реплей с 01.01.2026: пересчёт прогнозов, человеческие данные остаются."""
+    _state["paused"] = False
+    _state["step_budget"] = None
+    _state["step_restore_paused"] = False
+    _restart_replay()
+    _wake.set()
+    return clock_status()
+
+
+def pause() -> dict:
+    """Приостановить продвижение сим-времени (прогнозы больше не пересчитываются)."""
+    _state["paused"] = True
+    _state["step_budget"] = None
+    _wake.set()
+    log.info("sim-clock paused at bucket=%s (%s)", _state["bucket"], _now_ts())
+    return clock_status()
+
+
+def resume() -> dict:
+    _state["paused"] = False
+    _wake.set()
+    log.info("sim-clock resumed at bucket=%s (%s)", _state["bucket"], _now_ts())
+    return clock_status()
+
+
+def step(n: int = 1) -> dict:
+    """Просчитать n бакетов вперёд немедленно (независимо от паузы)."""
+    n = max(1, min(50, int(n)))
+    _state["step_restore_paused"] = _state["paused"]
+    _state["paused"] = False
+    _state["step_budget"] = n
+    _wake.set()
+    log.info("sim-clock step requested: %s бакет(ов) от %s", n, _now_ts())
+    return clock_status()
 
 
 def _safeloop() -> None:
@@ -179,18 +419,37 @@ def start() -> None:
 
 def stop() -> None:
     _stop.set()
+    _wake.set()
     _state["running"] = False
 
 
 def clock_status() -> dict:
     b = _state["bucket"]
+    start = bucket_of(dt.datetime.fromisoformat(config.SIM_START))
+    total = max(1, (_state["panel_max"] or start) - start)
+    # фактический темп: пауза между тиками = max(интервал, длительность расчёта)
+    eff = max(float(_state["tick_sec"] or 75), float(_state["last_tick_sec"] or 0)) or 75.0
     return {
         "mode": "replay-2026",
         "sim_now": ts_of(b) if b is not None else None,
         "bucket": b,
+        "bucket_start": start,
+        "start_ts": ts_of(start),
+        "loop": config.SIM_LOOP,
+        "paused": _state["paused"],
+        "progress": round(max(0.0, min(1.0, ((b or start) - start) / total)), 4),
         "panel_max": _state["panel_max"],
         "panel_max_ts": ts_of(_state["panel_max"]) if _state["panel_max"] else None,
         "tick_sec": _state["tick_sec"],
+        "speed": speed_level(),
+        "fast": _state["fast"],
+        "parallel": _state["parallel"],
+        "last_tick_sec": _state["last_tick_sec"],
+        "shap_top_k": config.SHAP_TOP_K,
+        # сколько 6ч-бакетов в час реального времени и сколько идёт полный проход
+        "buckets_per_hour": round(3600 / eff, 1),
+        "full_pass_hours": round(total * eff / 3600, 2),
+        "effective_tick_sec": round(eff, 1),
         "next_tick_in_sec": (max(0, int(_state["next_tick"] - time.time()))
                              if _state["next_tick"] else None),
         "computing": _state["computing"],

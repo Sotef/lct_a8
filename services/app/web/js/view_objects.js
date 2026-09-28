@@ -1,169 +1,229 @@
-
-  /* ---------- КАРТА (офлайн SVG, без внешних CDN) ---------- */
-  function renderMap(host, objs, state) {
-    const W = 1000, H = 580, cx = 500, cy = 300;
-    const noData = objs.filter(o => !Object.keys(o.risks || {}).length).length;
-
-    const wrap = el(`<div></div>`);
-    const note = el(`<div class="note" style="margin-bottom:12px">⚠ Координаты объектов в данных
-      отсутствуют — позиции на карте <b>схематичные</b> (детерминированный разброс вокруг Москвы
-      и области), цвет = максимальный risk30, размер = число каналов.
-      ${noData ? `<b>${noData} объектов без данных</b> (серые полые точки — нет активных каналов задач прогнозирования).` : ""}
-      Это визуальная кластеризация, а не реальная география.</div>`);
-    const box = el(`<div class="maphost"></div>`);
-    box.appendChild(el(`<div class="map-note">Нажмите на объект — карточка с датчиками и прогнозами · офлайн-карта (без CDN)</div>`));
-    wrap.appendChild(note); wrap.appendChild(box); host.appendChild(wrap);
-
-    /* детерминированные xy: сгущение к «Москве», разброс по «МО» */
-    function xy(oid) {
-      let h = 0;
-      for (const ch of String(oid)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-      const a = (h % 360) * Math.PI / 180;
-      const r = 40 + (h % 1000) / 1000 * 230;      /* 40..270 — ближе к центру */
-      return [cx + r * Math.cos(a) * 1.35, cy + r * Math.sin(a) * 1.05];
-    }
-
-    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;border:1px solid var(--border);
-      border-radius:var(--radius);background:var(--bg-2)">`;
-    /* сетка */
-    for (let gx = 0; gx <= W; gx += 50)
-      svg += `<line x1="${gx}" y1="0" x2="${gx}" y2="${H}" stroke="var(--border)" opacity=".35"/>`;
-    for (let gy = 0; gy <= H; gy += 50)
-      svg += `<line x1="0" y1="${gy}" x2="${W}" y2="${gy}" stroke="var(--border)" opacity=".35"/>`;
-    /* условные «кольцевые дороги» и центр */
-    svg += `<circle cx="${cx}" cy="${cy}" r="90" fill="none" stroke="var(--border-strong)" opacity=".5" stroke-dasharray="6 5"/>
-      <circle cx="${cx}" cy="${cy}" r="200" fill="none" stroke="var(--border-strong)" opacity=".35" stroke-dasharray="4 6"/>
-      <circle cx="${cx}" cy="${cy}" r="300" fill="none" stroke="var(--border-strong)" opacity=".25" stroke-dasharray="3 7"/>
-      <text x="${cx}" y="${cy - 8}" text-anchor="middle" fill="var(--text-dim)" font-size="13" font-weight="800">МОСКВА</text>
-      <text x="${cx}" y="${cy + 10}" text-anchor="middle" fill="var(--text-faint)" font-size="10">центр диспетчеризации</text>`;
-
-    objs.forEach(o => {
-      const risks = o.risks || {};
-      const vals = Object.values(risks);
-      const maxR = vals.length ? Math.max(0, ...vals.map(r => r.risk30_max || 0)) : 0;
-      const ch = vals.length ? Math.max(1, ...vals.map(r => r.channel_count || 0)) : 0;
-      const has = vals.length > 0;
-      const [x, y] = xy(o.object_id);
-      const r = has ? Math.min(16, 5 + Math.sqrt(ch) * 1.6) : 4.5;
-      const tasksHtml = Object.entries(risks).map(([t, rk]) =>
-        `<span class="badge ${rk.risk30_max >= 0.5 ? "high" : rk.risk30_max >= 0.2 ? "mid" : "low"}"
-          style="margin:2px">${TASK_META[t] ? TASK_META[t].short : t}: ${fmt(rk.risk30_max, 2)}</span>`).join(" ");
-      svg += `<g class="omap" data-oid="${o.object_id}" style="cursor:pointer">
-        ${has && maxR >= 0.5 ? `<circle cx="${x}" cy="${y}" r="${r + 6}" fill="${riskHex(maxR)}" opacity=".18"/>` : ""}
-        <circle cx="${x}" cy="${y}" r="${r}"
-          fill="${has ? riskHex(maxR) : "transparent"}"
-          stroke="${has ? "var(--border-strong)" : "var(--text-faint)"}"
-          stroke-width="${has ? 1.2 : 1.4}" stroke-dasharray="${has ? "none" : "3 2"}">
-          <title>${esc(o.name || o.object_id)} · ${has ? "макс риск " + fmt(maxR, 2) + ", каналов " + ch : "нет данных по задачам прогнозирования"}</title></circle>
-        ${has ? `<text x="${x}" y="${y + 3.5}" text-anchor="middle" font-size="${Math.min(10, r)}" fill="#0b0d12" font-weight="800">${ch > 999 ? "1k+" : ch}</text>` : ""}
-        <text x="${x}" y="${y + r + 13}" text-anchor="middle" font-size="10"
-          fill="var(--text-dim)">${esc((o.name || o.object_id).slice(0, 26))}</text>
-        <circle class="ohit" cx="${x}" cy="${y}" r="${Math.max(r + 6, 14)}" fill="transparent">
-          <title>${esc(o.name || o.object_id)} · ${esc(o.type || "")} · район ${esc(o.district || "—")}
-${tasksHtml ? tasksHtml.replace(/<[^>]+>/g, " ") : "нет данных"}</title></circle>
-      </g>`;
-    });
-    svg += `</svg>`;
-    box.appendChild(el(svg));
-    box.querySelectorAll(".omap").forEach(g => {
-      g.addEventListener("click", () =>
-        Views.forecasts.openObject(g.dataset.oid, state));
-    });
-  }
-
-/* view_objects.js — объекты: список / офлайн-карта Москвы и области */
+/* view_objects.js — объекты: список / карта-радар (офлайн SVG), риски L2 */
 window.Views = window.Views || {};
 Views.objects = (() => {
-  const { el, esc, fmt, riskHex } = UI;
-  const TASK_META = API.TASK_META;
-  let mode = "list";
+  const { el, esc, ic, fmt, riskHex, riskColor, riskLevel } = UI;
+  let mode = "list", q = "", distFilter = "", riskFilter = 0, sortMode = "risk";
+  let lastState = null;
 
-  function destroy() {}
-
-  async function render(main, state) {
-    main.innerHTML = `<div class="spin"></div>`;
+  async function render(main, state, silent) {
+    lastState = state;
+    const F = UI.stage();               // сборка offscreen — список/карта не «пропадают»
+    UI.quiet(main, silent);
     const tree = await API.get("/objects");
-    const objs = tree.tree.filter(o => o.level >= 2);
+    const objs = (tree.tree || []).filter(o => o.level >= 2);
+    const districts = [...new Set(objs.map(o => o.district).filter(Boolean))].sort();
+    if (!mode) mode = "list";
 
-    const head = el(`<div class="topbar">
-      <div><div class="h1">Объекты</div>
-      <div class="sub">${objs.length} объектов · риски L2 (максимум risk30 по каналам)</div></div>
-      <div class="grow"></div>
-      <div class="seg">
-        <button data-m="list" class="${mode === "list" ? "on" : ""}">Список</button>
-        <button data-m="map" class="${mode === "map" ? "on" : ""}">Карта</button>
-      </div></div>`);
-    head.querySelectorAll(".seg button").forEach(b => {
-      b.onclick = () => { mode = b.dataset.m; render(main, state); };
+    const max7 = o => Math.max(0, ...Object.values(o.risk7d || {}).map(v => +v || 0));
+    const has7 = o => Object.keys(o.risk7d || {}).length > 0;
+    let list = objs.filter(o => {
+      const r = max7(o);
+      if (riskFilter && r < riskFilter) return false;
+      if (distFilter && o.district !== distFilter) return false;
+      if (!q) return true;
+      const t = q.toLowerCase();
+      return [o.name, o.type, o.district, o.object_id].some(v => (v || "").toLowerCase().includes(t));
     });
+    if (sortMode === "risk") list = [...list].sort((a, b) => max7(b) - max7(a));
+    if (sortMode === "name") list = [...list].sort((a, b) => (a.name || "").localeCompare(b.name || "", "ru"));
+    if (sortMode === "channels") list = [...list].sort((a, b) =>
+      Math.max(0, ...Object.values(b.risks || {}).map(r => r.channel_count || 0)) -
+      Math.max(0, ...Object.values(a.risks || {}).map(r => r.channel_count || 0)));
+    const hi = objs.filter(o => max7(o) >= 0.5).length;
 
-    main.innerHTML = "";
-    main.appendChild(head);
-    const host = el(`<div></div>`);
-    main.appendChild(host);
-    if (mode === "list") renderList(host, objs, state);
-    else renderMap(host, objs, state);
-  }
+    const head = el(`<div class="page-head">
+      <div><div class="h1">Объекты <span class="gt">инфраструктуры</span></div>
+        <div class="sub">${objs.length} объектов уровня 2 · риск = <b>максимум P(событие ≤ 7 дней)</b> по каналам
+          (прогноз, за последние 3 суток сим-времени) ·
+          <b style="color:var(--bad)">${hi}</b> с недельным риском ≥ 0.5</div></div>
+      <div class="grow"></div>
+      <div class="seg" id="segmode">
+        <button data-m="list" class="${mode === "list" ? "on" : ""}">${ic("list", "s")} Список</button>
+        <button data-m="map" class="${mode === "map" ? "on" : ""}">${ic("map", "s")} Карта-радар</button>
+      </div></div>`);
+    FX.seg(head.querySelector("#segmode"), b => { mode = b.dataset.m; render(main, state, true); });
+    F.appendChild(head);
 
-  /* ---------- СПИСОК ---------- */
-  function renderList(host, objs, state) {
     const tools = el(`<div class="toolrow">
-      <input type="search" placeholder="Поиск объекта, района, типа…">
-      <select class="sort">
-        <option value="risk">Сортировка: риск ↓</option>
-        <option value="name">Сортировка: название</option>
-        <option value="channels">Сортировка: каналы ↓</option>
-      </select></div>`);
-    const list = el(`<div class="card" style="padding:6px 0"><table class="tbl"><thead><tr>
-      <th>Объект</th><th>Район</th><th>Каналы</th><th>Риск по задачам</th><th></th>
-    </tr></thead><tbody></tbody></table></div>`);
-    const tbody = list.querySelector("tbody");
-    const q = tools.querySelector("input"), sortSel = tools.querySelector(".sort");
+      <input type="search" id="q" placeholder="Поиск: название, район, тип, id…" value="${esc(q)}">
+      <select id="dist"><option value="">все районы</option>${districts.map(d =>
+        `<option value="${esc(d)}" ${d === distFilter ? "selected" : ""}>район ${esc(d)}</option>`).join("")}</select>
+      <select id="risk"><option value="0">любой риск</option>
+        <option value="0.2" ${riskFilter === 0.2 ? "selected" : ""}>P(≤7д) ≥ 0.2</option>
+        <option value="0.5" ${riskFilter === 0.5 ? "selected" : ""}>P(≤7д) ≥ 0.5</option></select>
+      <select id="sort"><option value="risk" ${sortMode === "risk" ? "selected" : ""}>сортировка: риск ↓</option>
+        <option value="name" ${sortMode === "name" ? "selected" : ""}>по названию</option>
+        <option value="channels" ${sortMode === "channels" ? "selected" : ""}>по числу каналов</option></select>
+      <span class="grow"></span><span class="faint">показано ${list.length} из ${objs.length}</span></div>`);
+    tools.querySelector("#q").oninput = UI.debounce(e => { q = e.target.value; render(main, state, true); }, 280);
+    tools.querySelector("#dist").onchange = e => { distFilter = e.target.value; render(main, state, true); };
+    tools.querySelector("#risk").onchange = e => { riskFilter = +e.target.value; render(main, state, true); };
+    tools.querySelector("#sort").onchange = e => { sortMode = e.target.value; render(main, state, true); };
+    F.appendChild(tools);
 
-    function draw() {
-      const term = q.value.toLowerCase();
-      let rows = objs.filter(o =>
-        !term || (o.name || "").toLowerCase().includes(term) ||
-        (o.district || "").includes(term) || (o.type || "").toLowerCase().includes(term));
-      const maxR = o => Math.max(0, ...Object.values(o.risks || {}).map(r => r.risk30_max || 0));
-      const ch = o => Math.max(0, ...Object.values(o.risks || {}).map(r => r.channel_count || 0));
-      if (sortSel.value === "risk") rows = [...rows].sort((a, b) => maxR(b) - maxR(a));
-      if (sortSel.value === "name") rows = [...rows].sort((a, b) => (a.name || "").localeCompare(b.name || "", "ru"));
-      if (sortSel.value === "channels") rows = [...rows].sort((a, b) => ch(b) - ch(a));
-      tbody.innerHTML = "";
-      let noData = 0;
-      rows.forEach(o => {
-        const empty = !Object.keys(o.risks || {}).length;
-        if (empty) noData++;
-        const tr = el(`<tr class="rrow">
-          <td><b>${esc(o.name || o.object_id)}</b>
-            ${empty ? '<span class="badge" title="нет активных каналов задач прогнозирования">нет данных</span>' : ""}
-            <div class="muted" style="font-size:11.5px">${esc(o.type || "")}</div></td>
-          <td class="muted">${esc(o.district || "")}</td>
-          <td class="num">${ch(o) || "—"}</td>
-          <td class="riskcells" style="display:flex;gap:6px"></td>
-          <td class="num muted">${empty ? "—" : fmt(maxR(o), 2)}</td></tr>`);
-        const cells = tr.querySelector(".riskcells");
-        ["fire", "access", "sensor", "wear"].forEach(t => {
-          const r = (o.risks || {})[t];
-          const d = el(`<span title="${TASK_META[t].label}: ${r ? fmt(r.risk30_max, 2) : "нет данных"}"
-            style="width:34px;height:6px;border-radius:3px;display:inline-block;background:${riskHex(r && r.risk30_max || 0)};opacity:${r ? 1 : .18}"></span>`);
-          cells.appendChild(d);
-        });
-        tr.onclick = () => Views.forecasts.openObject(o.object_id, state);
-        tbody.appendChild(tr);
-      });
-      if (!rows.length) tbody.appendChild(el(`<tr><td colspan="5" class="empty">ничего не найдено</td></tr>`));
-      else if (noData) tbody.appendChild(el(`<tr><td colspan="5" class="muted" style="padding:10px 14px">
-        ${noData} из ${rows.length} объектов без данных — нет активных каналов задач прогнозирования
-        (датчики этих объектов не входят в журнал СМВУ или не срабатывали за период)</td></tr>`));
-    }
-    q.oninput = draw; sortSel.onchange = draw;
-    host.appendChild(tools); host.appendChild(list);
-    draw();
+    if (mode === "list") renderList(F, list, state, max7, has7);
+    else renderMap(F, list, state, max7, has7);
+    /* список — мягко (морфинг значений), карту-радар пересобираем целиком:
+       зум/перетаскивание держат ссылки на конкретный узел SVG */
+    const canMerge = mode === "list" && !!main.dataset.mounted;
+    UI.mount(main, F, { merge: canMerge, quiet: silent });
+    main.dataset.mounted = "1";
+    UI.stagger(main, ".rv-row");
+    return true;
   }
 
-  function destroy() { if (leaflet) { leaflet.remove(); leaflet = null; } }
+  /* полоски по направлениям: значения — недельный прогноз P(≤7д), в подсказке и L2 risk30 */
+  function riskStrip(risks, risk7d) {
+    return API.TASKS.map(t => {
+      const v = +((risk7d || {})[t] || 0);
+      const r = (risks || {})[t];
+      const known = (risk7d || {})[t] !== undefined || !!r;
+      return `<span title="${esc(API.TASK_META[t].label)}: P(≤7д) ${risk7d && risk7d[t] !== undefined
+        ? fmt(risk7d[t], 2) : "нет данных"}${r ? ` · L2 risk30 ${fmt(r.risk30_max, 2)}` : ""}"
+        style="width:30px;height:7px;border-radius:4px;display:inline-block;background:${riskHex(v)};opacity:${known ? 1 : .15}"></span>`;
+    }).join(" ");
+  }
 
-  return { render, destroy, name: "Объекты", icon: "◫" };
+  function renderList(host, list, state, max7, has7) {
+    const card = el(`<div class="card flat tscroll"><table class="tbl"><thead><tr>
+      <th>Объект</th><th>Район</th><th>Каналы</th><th>P(≤7д) по направлениям</th><th>Макс. P(≤7д)</th><th></th>
+    </tr></thead><tbody></tbody></table></div>`);
+    const tb = card.querySelector("tbody");
+    if (!list.length) tb.appendChild(el(`<tr><td colspan="6">${UI.emptyState("ничего не найдено", "search")}</td></tr>`));
+    const chOf = o => Math.max(0, ...Object.values(o.risks || {}).map(r => r.channel_count || 0));
+    list.forEach((o, i) => {
+      const r = max7(o), known = has7(o), lv = riskLevel(known ? r : null);
+      const tr = el(`<tr class="rrow rv-row" data-id="${esc(o.object_id)}" style="--i:${Math.min(i, 20)}">
+        <td><b>${esc(o.name || o.object_id)}</b>${known ? "" : ' <span class="badge">нет недельных прогнозов</span>'}
+          <div class="faint" style="font-size:11.5px">${esc(o.type || "")} · id ${esc(o.object_id)}</div></td>
+        <td class="muted">${esc(o.district || "—")}</td>
+        <td class="num">${chOf(o) || "—"}</td>
+        <td>${riskStrip(o.risks, o.risk7d)}</td>
+        <td><span class="badge ${known ? lv.cls : ""}">${known ? fmt(r, 2) : "—"}</span></td>
+        <td class="faint">${ic("chevron", "s")}</td></tr>`);
+      tr.onclick = () => Cards.object.open(tr.dataset.id, { state, task: state.task });
+      tb.appendChild(tr);
+    });
+    host.appendChild(card);
+  }
+  /* ---------- карта-радар: схематичная раскладка по районам (координат в данных нет) ---------- */
+  function renderMap(host, list, state, max7, has7) {
+    const W = 1000, H = 640, cx = W / 2, cy = H / 2;
+    const byDist = {};
+    list.forEach(o => { (byDist[o.district || "—"] = byDist[o.district || "—"] || []).push(o); });
+    const districts = Object.keys(byDist).sort();
+
+    const ahead = el(`<div class="note" style="margin:0 0 12px">
+      ${ic("info", "s")} Географических координат в источниках нет: раскладка <b>схематичная</b> — районы-секторы,
+      внутри сектора объекты стоят по индексу. Цвет — <b>P(событие ≤ 7 дней)</b> (максимум по каналам),
+      размер — число каналов, пульсация — высокий недельный риск. Это визуальная кластеризация очереди риска,
+      а не карта коллекторов.</div>`);
+    const host2 = el(`<div class="maphost" id="mh"></div>`);
+    const ctrl = el(`<div class="map-ctrl">
+      <button class="icbtn" data-z="in" title="приблизить">${ic("plus")}</button>
+      <button class="icbtn" data-z="out" title="отдалить">${ic("minus")}</button>
+      <button class="icbtn" data-z="reset" title="сбросить">${ic("target")}</button></div>`);
+    host2.appendChild(ctrl);
+    host2.appendChild(el(`<div class="map-legend">
+      <span><i style="background:var(--ok)"></i>низкий</span><span><i style="background:var(--warn)"></i>средний</span>
+      <span><i style="background:var(--bad)"></i>высокий</span>
+      <span class="faint">колесо — зум · перетаскивание — сдвиг</span></div>`));
+    host.appendChild(ahead); host.appendChild(host2);
+    const g = buildMapSvg(host2, districts, byDist, max7, has7, { W, H, cx, cy });
+    if (g) bindMapInteractions(host2, g);
+  }
+
+  function buildMapSvg(host, districts, byDist, max7, has7, { W, H, cx, cy }) {
+    const N = Math.max(1, districts.length);
+    let svg = `<svg viewBox="0 0 ${W} ${H}" id="mpsvg">`;
+    for (let gx = 0; gx <= W; gx += 60)
+      svg += `<line x1="${gx}" y1="0" x2="${gx}" y2="${H}" stroke="var(--border)" opacity=".3"/>`;
+    for (let gy = 0; gy <= H; gy += 60)
+      svg += `<line x1="0" y1="${gy}" x2="${W}" y2="${gy}" stroke="var(--border)" opacity=".3"/>`;
+    for (let r = 90; r <= 300; r += 70)
+      svg += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--border-strong)"
+        stroke-dasharray="${(r / 30).toFixed(0)} ${(r / 20).toFixed(0)}" opacity=".28"/>`;
+    svg += `<defs><linearGradient id="sweepg" x1="0" x2="1"><stop offset="0" stop-color="var(--accent-2)" stop-opacity="0"/>
+      <stop offset="1" stop-color="var(--accent-2)" stop-opacity=".9"/></linearGradient>
+      <radialGradient id="sweepf"><stop offset="0" stop-color="var(--accent-2)" stop-opacity=".16"/>
+      <stop offset="1" stop-color="var(--accent-2)" stop-opacity="0"/></radialGradient></defs>
+      <g style="transform-origin:${cx}px ${cy}px;animation:spin 10s linear infinite">
+      <line x1="${cx}" y1="${cy}" x2="${cx + 300}" y2="${cy}" stroke="url(#sweepg)" stroke-width="2"/>
+      <path d="M${cx} ${cy} L${cx + 300} ${cy} A300 300 0 0 1 ${cx + 300 * Math.cos(-0.4)} ${cy + 300 * Math.sin(-0.4)} Z"
+        fill="url(#sweepf)"/></g>
+      <circle cx="${cx}" cy="${cy}" r="4" fill="var(--accent)"/>
+      <circle cx="${cx}" cy="${cy}" r="10" fill="none" stroke="var(--accent)" opacity=".5" class="halo"/>
+      <text x="${cx}" y="${cy - 20}" text-anchor="middle" fill="var(--text-dim)" font-size="12" font-weight="800">ЦЕНТР ОДС</text>`;
+
+    districts.forEach((d, di) => {
+      const a0 = (di / N) * 2 * Math.PI - Math.PI / 2;
+      const items = byDist[d];
+      svg += `<line x1="${cx + 55 * Math.cos(a0)}" y1="${cy + 55 * Math.sin(a0)}"
+        x2="${cx + 292 * Math.cos(a0)}" y2="${cy + 292 * Math.sin(a0)}" stroke="var(--border-strong)" opacity=".3"/>
+        <text x="${cx + 324 * Math.cos(a0)}" y="${cy + 324 * Math.sin(a0)}" text-anchor="middle"
+          fill="var(--text-faint)" font-size="11" font-weight="700">Р-Н ${esc(d)}</text>`;
+      items.forEach((o, i) => {
+        const ring = 115 + (i % 3) * 58 + ((di % 2) ? 26 : 0);
+        const da = (i / Math.max(1, items.length)) * (2 * Math.PI / N) * .92 - (Math.PI / N) * .44;
+        const a = a0 + da;
+        const x = cx + ring * Math.cos(a) * 1.16, y = cy + ring * Math.sin(a);
+        const r = max7(o), chn = Math.max(1, ...Object.values(o.risks || {}).map(v => v.channel_count || 0));
+        const has = has7(o);
+        const rad = has ? Math.min(16, 5 + Math.sqrt(chn) * 1.5) : 4.5;
+        svg += `<g class="omap" data-oid="${esc(o.object_id)}">
+          ${has && r >= .5 ? `<circle class="halo" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${(rad + 6).toFixed(1)}"
+            fill="${riskHex(r)}" opacity=".2"/>` : ""}
+          <circle class="dot" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${rad.toFixed(1)}"
+            fill="${has ? riskHex(r) : "transparent"}" stroke="${has ? "var(--border-strong)" : "var(--text-faint)"}"
+            stroke-width="${has ? 1.2 : 1.4}" stroke-dasharray="${has ? "none" : "3 2"}"/>
+          ${has ? `<text x="${x.toFixed(1)}" y="${(y + 3.5).toFixed(1)}" text-anchor="middle"
+            font-size="${Math.min(10, rad).toFixed(0)}" fill="#0b0d12" font-weight="800">${chn > 999 ? "1k" : chn}</text>` : ""}
+          <text class="lbl" x="${x.toFixed(1)}" y="${(y + rad + 13).toFixed(1)}" text-anchor="middle" font-size="10"
+            fill="var(--text)">${esc((o.name || o.object_id).slice(0, 26))}</text>
+          <title>${esc(o.name || o.object_id)} · ${esc(o.type || "")} · район ${esc(o.district || "—")} ·
+            P(≤7д) ${has ? fmt(r, 2) : "нет данных"} · каналов ${chn}</title></g>`;
+      });
+    });
+    svg += `</svg>`;
+    host.appendChild(el(`<div style="position:absolute;inset:0">${svg}</div>`));
+    return host.querySelector("#mpsvg");
+  }
+  function bindMapInteractions(host, g) {
+    let zoom = 1, pan = { x: 0, y: 0 };
+    g.style.transformOrigin = "50% 50%";
+    g.style.transition = "transform .3s cubic-bezier(.16,1,.3,1)";
+    const apply = () => g.style.transform = `scale(${zoom}) translate(${pan.x}px, ${pan.y}px)`;
+    host.querySelectorAll("[data-z]").forEach(b => b.onclick = () => {
+      const z = b.dataset.z;
+      if (z === "in") zoom = Math.min(3, zoom * 1.25);
+      else if (z === "out") zoom = Math.max(.6, zoom / 1.25);
+      else { zoom = 1; pan = { x: 0, y: 0 }; }
+      host.classList.toggle("zoomed", zoom > 1.4);
+      apply();
+    });
+    host.addEventListener("wheel", e => {
+      e.preventDefault();
+      zoom = Math.max(.6, Math.min(3, zoom * (e.deltaY < 0 ? 1.12 : .9)));
+      host.classList.toggle("zoomed", zoom > 1.4);
+      apply();
+    }, { passive: false });
+    let drag = null, moved = false;
+    host.addEventListener("pointerdown", e => {
+      if (e.target.closest(".map-ctrl")) return;
+      drag = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y };
+      moved = false; host.classList.add("drag");
+    });
+    addEventListener("pointermove", e => {
+      if (!drag) return;
+      moved = true;
+      pan = { x: drag.px + (e.clientX - drag.x), y: drag.py + (e.clientY - drag.y) };
+      apply();
+    });
+    addEventListener("pointerup", () => { if (drag) { drag = null; host.classList.remove("drag"); } });
+    g.querySelectorAll(".omap").forEach(n => n.addEventListener("click", () => {
+      if (moved) { moved = false; return; }
+      Cards.object.open(n.dataset.oid, { state: lastState, task: lastState && lastState.task });
+    }));
+  }
+  return { render, name: "Объекты", icon: "map" };
 })();

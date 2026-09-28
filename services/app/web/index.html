@@ -2,27 +2,63 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#07080d">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="ОДС">
 <title>Москоллектор · Предиктивная аналитика ОДС</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icons/icon-192.svg">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><text y='19' font-size='18'>◈</text></svg>">
 <link rel="stylesheet" href="/css/themes.css">
-<link rel="stylesheet" href="/css/base.css">
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-      onerror="this.remove()">
+<link rel="stylesheet" href="/css/core.css">
+<link rel="stylesheet" href="/css/shell.css">
+<link rel="stylesheet" href="/css/topbar.css">
+<link rel="stylesheet" href="/css/components.css">
+<link rel="stylesheet" href="/css/buttons.css">
+<link rel="stylesheet" href="/css/widgets.css">
+<link rel="stylesheet" href="/css/overlays.css">
+<link rel="stylesheet" href="/css/overlays2.css">
+<link rel="stylesheet" href="/css/pages.css">
+<link rel="stylesheet" href="/css/pages2.css">
+<link rel="stylesheet" href="/css/anim.css">
+<link rel="stylesheet" href="/css/mobile.css">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("mc_theme")||"obsidian";}catch(e){}</script>
 </head>
 <body data-theme="obsidian">
-<script>try{document.body.dataset.theme=localStorage.getItem("mc_theme")||"obsidian";}catch(e){}</script>
+<div class="boot" id="boot"><div class="ring"></div></div>
 <div id="app"></div>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-      onerror="window.__no_leaflet=true"></script>
-<script src="/js/api.js"></script>
+<script src="/js/icons.js"></script>
 <script src="/js/ui.js"></script>
+<script src="/js/bgfx.js"></script>
+<script src="/js/fx.js"></script>
+<script src="/js/mobile/offline.js"></script>
+<script src="/js/api.js"></script>
+<script src="/js/mobile/push.js"></script>
+<script src="/js/mobile/photo.js"></script>
 <script src="/js/charts.js"></script>
+<script src="/js/charts2.js"></script>
+<script src="/js/charts3.js"></script>
+<script src="/js/overlays.js"></script>
+<script src="/js/cmdk.js"></script>
+<script src="/js/card_forecast.js"></script>
+<script src="/js/card_object.js"></script>
+<script src="/js/notify.js"></script>
+<script src="/js/view_alerts.js"></script>
 <script src="/js/view_dashboard.js"></script>
 <script src="/js/view_objects.js"></script>
 <script src="/js/view_graph.js"></script>
 <script src="/js/view_forecasts.js"></script>
 <script src="/js/view_plan.js"></script>
+<script src="/js/view_tickets.js"></script>
+<script src="/js/view_audit.js"></script>
+<script src="/js/view_sys.js"></script>
 <script src="/js/view_users.js"></script>
+<script src="/js/login.js"></script>
+<script src="/js/mobile/shell.js"></script>
 <script src="/js/app.js"></script>
 </body>
 </html>

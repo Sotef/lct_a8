@@ -2,7 +2,10 @@
 """Auth-ручки (BACKEND_SPEC §5.1)."""
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from .. import models_db as dbm
@@ -10,6 +13,7 @@ from .. import schemas
 from .. import security as sec
 from ..database import get_db
 from ..deps import require_roles
+from ..services import audit_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -26,14 +30,24 @@ def login(req: schemas.LoginRequest, request: Request,
     sec.check_login_rate_limit(client)
     user = db.query(dbm.User).filter(dbm.User.username == req.username).first()
     if user is None or not sec.verify_password(req.password, user.password_hash):
+        audit_service.record(db, "auth.login_failed",
+                             user_id=user.id if user else None,
+                             entity_type="user", entity_id=req.username[:120],
+                             detail={"username": req.username[:120],
+                                     "reason": "bad_credentials"},
+                             level=logging.WARNING)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                             detail="неверный логин или пароль")
     if not user.active:
+        audit_service.record(db, "auth.login_failed", user_id=user.id,
+                             entity_type="user", entity_id=str(user.id),
+                             detail={"username": user.username, "reason": "disabled"},
+                             level=logging.WARNING)
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="пользователь отключён")
-    db.add(dbm.AuditLog(user_id=user.id, action="auth.login",
-                        entity_type="user", entity_id=str(user.id)))
-    db.commit()
+    audit_service.record(db, "auth.login", user_id=user.id, entity_type="user",
+                         entity_id=user.id, detail={"username": user.username,
+                                                    "role": user.role})
     return {"access_token": sec.create_access_token(user.id),
             "refresh_token": sec.create_refresh_token(user.id),
             "user": _user_out(user)}
@@ -80,8 +94,37 @@ def create_user(req: schemas.CreateUserRequest,
                     password_hash=sec.hash_password(req.password))
     db.add(user)
     db.flush()
-    db.add(dbm.AuditLog(user_id=admin.id, action="admin.create_user",
-                        entity_type="user", entity_id=str(user.id),
-                        detail={"username": req.username, "role": req.role}))
+    audit_service.record(db, "admin.create_user", user_id=admin.id, entity_type="user",
+                         entity_id=user.id, commit=False,
+                         detail={"username": req.username, "role": req.role,
+                                 "district": req.district})
     db.commit()
     return _user_out(user)
+
+
+@router.post("/logout")
+def logout(db: Session = Depends(get_db),
+           user: dbm.User = Depends(require_roles("tech", "dispatcher", "central"))):
+    audit_service.record(db, "auth.logout", user_id=user.id, entity_type="user",
+                         entity_id=user.id, detail={"username": user.username})
+    return {"ok": True}
+
+
+class _ActiveReq(BaseModel):
+    active: bool
+
+
+@router.post("/admin/users/{user_id}/active")
+def set_user_active(user_id: int, req: _ActiveReq, db: Session = Depends(get_db),
+                    admin: dbm.User = Depends(require_roles("central"))):
+    u = db.get(dbm.User, user_id)
+    if u is None:
+        raise HTTPException(status_code=404, detail="пользователь не найден")
+    if u.id == admin.id and not req.active:
+        raise HTTPException(status_code=400, detail="нельзя заблокировать самого себя")
+    u.active = req.active
+    audit_service.record(db, "admin.set_user_active", user_id=admin.id,
+                         entity_type="user", entity_id=u.id, commit=False,
+                         detail={"username": u.username, "active": req.active})
+    db.commit()
+    return {"ok": True, "id": u.id, "active": u.active}

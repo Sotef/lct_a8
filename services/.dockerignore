@@ -1,0 +1,38 @@
+# Контекст сборки = services/. Исключаем всё тяжёлое/локальное:
+# без этого в образ уйдёт data/app.db (~8 ГБ), логи и .venv.
+.venv/
+.venv*/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Данные и логи подключаются volume-ами (docker-compose), в образ не нужны
+data/
+logs/
+*.log
+
+# Сервисные/локальные файлы
+.env
+.env.*
+!.env.docker.example
+tests/
+docs/
+Dockerfile
+Dockerfile.*
+docker-compose*.yml
+.dockerignore
+.git/
+.gitignore
+README.md
+*_PLAN.md
+BACKEND_SPEC.md
+FRONTEND.md
+SERVICE_PLAN.md
+pip.conf
+
+# dev-страницы headless-прогонов (в прод-сборке не нужны)
+app/web/__probe.html
+app/web/__mprobe.html

@@ -2,6 +2,8 @@
 """Прогнозы/карточки/решения (BACKEND_SPEC §5.2, §6.2)."""
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
@@ -10,7 +12,8 @@ from .. import schemas
 from .. import task_cfg
 from ..database import get_db
 from ..deps import require_roles, scoped_object_ids
-from ..services import decision_service, forecast_card, prediction_service as ps
+from ..services import audit_service, decision_service, forecast_card, prediction_service as ps
+from ..services import idempotency as idem
 
 router = APIRouter(prefix="/forecasts", tags=["forecasts"])
 
@@ -58,25 +61,53 @@ def get_forecast_card(prediction_id: int, db: Session = Depends(get_db),
                           require_roles("dispatcher", "central", "tech"))):
     p = _get_pred(db, prediction_id)
     _check_scope(user, db, p)
-    return forecast_card.build_card(db, p)
+    card = forecast_card.build_card(db, p)
+    ticket = (db.query(dbm.MaintenanceTask)
+              .filter(dbm.MaintenanceTask.task == p.task,
+                      dbm.MaintenanceTask.channel_id == p.channel_id)
+              .order_by(dbm.MaintenanceTask.id.desc()).first())
+    card["ticket"] = None if ticket is None else {
+        "id": ticket.id, "status": ticket.status, "priority": ticket.priority,
+        "source": ticket.source,
+        "due_to": ticket.due_to.isoformat() if ticket.due_to else None}
+    audit_service.record(db, "forecast.view", user_id=user.id, entity_type="prediction",
+                         entity_id=p.id, level=logging.DEBUG,
+                         detail={"task": p.task, "channel_id": p.channel_id})
+    return card
 
 
 @router.get("/{prediction_id}/factors")
-def factors(prediction_id: int, db: Session = Depends(get_db),
+def factors(prediction_id: int, compute: bool = Query(False, description="посчитать SHAP, если не сохранены"),
+            db: Session = Depends(get_db),
             user: dbm.User = Depends(require_roles("dispatcher", "central", "tech"))):
     p = _get_pred(db, prediction_id)
     _check_scope(user, db, p)
-    return {"factors": p.factors or [],
-            "features": p.features_json or {}}
+    fac = p.factors
+    if not fac and compute:
+        fac = ps.compute_factors_for_prediction(db, p)
+    return {"factors": fac or [], "features": p.features_json or {},
+            "computed": bool(fac)}
 
 
 @router.post("/{prediction_id}/decision")
 def decide(prediction_id: int, req: schemas.DecisionRequest,
            db: Session = Depends(get_db),
-           user: dbm.User = Depends(require_roles("dispatcher", "central"))):
-    p = _get_pred(db, prediction_id)
-    dec = decision_service.create_decision(
-        db, prediction_id, req.decision, user_id=user.id,
-        username=user.username, responsible=req.responsible, comment=req.comment)
-    return {"ok": True, "prediction_id": prediction_id,
-            "decision_id": dec.id}
+           user: dbm.User = Depends(require_roles("dispatcher", "central")),
+           client_id: str | None = Depends(idem.client_id_header)):
+    path = f"/api/v1/forecasts/{prediction_id}/decision"
+    already, saved = idem.begin(db, client_id, user.id, path)
+    if already and saved is not None:
+        return saved                       # повтор офлайн-решения: без второй записи
+    try:
+        p = _get_pred(db, prediction_id)
+        dec = decision_service.create_decision(
+            db, prediction_id, req.decision, user_id=user.id,
+            username=user.username, responsible=req.responsible, comment=req.comment,
+            scheduled_at=req.scheduled_at, client_id=client_id, offline_ts=req.offline_ts)
+        res = {"ok": True, "prediction_id": prediction_id,
+               "decision_id": dec.id, "ticket_id": getattr(dec, "ticket_id", None)}
+    except HTTPException:
+        idem.cancel(db, client_id)
+        raise
+    idem.finish(db, client_id, res)
+    return res
