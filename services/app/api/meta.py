@@ -70,13 +70,16 @@ def _hist_window(db: Session, task: str, n: int):
 
     Без этого запрос группировал бы ВСЮ историю задачи (в реплее — сотни тысяч строк),
     из-за чего ответ «тренда» мог задерживаться и приходить в UI с опозданием.
+    Якорь — «актуальный» бакет задачи (в реплее это последний посчитанный бакет текущего
+    круга, см. ps.latest_bucket_ts): иначе после «Заново с января» окно цеплялось бы за
+    бакет прошлого круга из дальнего месяца и в тренде оставалась одна точка.
     Возвращает None, если прогнозов по задаче ещё нет.
     """
-    last = (db.query(func.max(dbm.Prediction.bucket_ts))
-            .filter(dbm.Prediction.task == task, dbm.current_only()).scalar())
+    last = ps.latest_bucket_ts(db, task)
     if last is None:
-        return None
-    return last - dt.timedelta(hours=6 * max(1, int(n)))      # окно с запасом; срез rows[-n:]
+        return None, None
+    # окно с запасом; срез rows[-n:], сверху — не позже «актуального» бакета
+    return last - dt.timedelta(hours=6 * max(1, int(n))), last
 
 
 @router.get("/meta/risk-history")
@@ -92,18 +95,18 @@ def risk_history(task: str = Query(...), n: int = Query(40, ge=1, le=300),
     """
     if task not in task_cfg.ALL_TASKS:
         raise HTTPException(status_code=400, detail="неизвестная задача")
-    lo = _hist_window(db, task, n)
+    lo, hi = _hist_window(db, task, n)
     if lo is None:
         return {"task": task, "measure": measure, "measure_ru": MEASURES[measure], "rows": []}
     if measure == "p7d":
-        return _history_p7d(db, task, n, lo)
+        return _history_p7d(db, task, n, lo, hi)
     col = {"p24": dbm.Prediction.p24, "p72": dbm.Prediction.p72}.get(
         measure, dbm.Prediction.risk30)
     rows = (db.query(dbm.Prediction.bucket_ts,
                      func.avg(col).label("avg"), func.max(col).label("mx"),
                      func.count(dbm.Prediction.id).label("cnt"))
             .filter(dbm.Prediction.task == task, dbm.current_only(),
-                    dbm.Prediction.bucket_ts >= lo)
+                    dbm.Prediction.bucket_ts >= lo, dbm.Prediction.bucket_ts <= hi)
             .group_by(dbm.Prediction.bucket_ts)
             .order_by(dbm.Prediction.bucket_ts.asc()).all())
     out = [{"bucket_ts": r[0].isoformat(),
@@ -113,7 +116,7 @@ def risk_history(task: str = Query(...), n: int = Query(40, ge=1, le=300),
     return {"task": task, "measure": measure, "measure_ru": MEASURES[measure], "rows": out}
 
 
-def _history_p7d(db: Session, task: str, n: int, lo=None) -> dict:
+def _history_p7d(db: Session, task: str, n: int, lo=None, hi=None) -> dict:
     """P(≤7 дней) по бакетам — колонка predictions.p7d (считается на тике)."""
     q = (db.query(dbm.Prediction.bucket_ts,
                   func.avg(dbm.Prediction.p7d).label("avg"),
@@ -123,6 +126,8 @@ def _history_p7d(db: Session, task: str, n: int, lo=None) -> dict:
                  dbm.current_only()))
     if lo is not None:
         q = q.filter(dbm.Prediction.bucket_ts >= lo)
+    if hi is not None:
+        q = q.filter(dbm.Prediction.bucket_ts <= hi)
     rows = (q.group_by(dbm.Prediction.bucket_ts)
             .order_by(dbm.Prediction.bucket_ts.asc()).all())
     out = [{"bucket_ts": r[0].isoformat(),
@@ -137,12 +142,15 @@ def channel_history(task: str = Query(...), channel_id: str = Query(...),
                     db: Session = Depends(get_db),
                     user: dbm.User = Depends(require_roles("dispatcher", "central", "tech"))):
     """История риска канала по бакетам (спарклайн на карточке)."""
+    top = ps.latest_bucket_ts(db, task)          # «актуальный» бакет: без бакетов прошлых кругов
     rows = (db.query(dbm.Prediction.bucket_ts, dbm.Prediction.risk30,
                      dbm.Prediction.p24, dbm.Prediction.exp_days)
             .filter(dbm.Prediction.task == task,
                     dbm.Prediction.channel_id == channel_id,
                     dbm.current_only())
             .order_by(dbm.Prediction.bucket_ts.asc()).all())
+    if top is not None:
+        rows = [r for r in rows if r[0] <= top]
     out = []
     for b, r30, p24, ed in rows[-n:]:
         out.append({"bucket_ts": b.isoformat(),

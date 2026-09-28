@@ -137,8 +137,15 @@ window.addEventListener("load", async () => {
     await step("Пульт: «максимум» переключает режим линий", async () => {
       const cb = q("#tmax"); cb.checked = !cb.checked; cb.dispatchEvent(new Event("change"));
       await sleep(1500);
-      return `showMax=${localStorage.getItem("mc_trend_max")}, линий=${q("#trend-body").querySelectorAll("path").length}`;
-    }, () => !!q("#trend-body") && q("#trend-body").querySelectorAll("path").length >= 2);
+      const paths = q("#trend-body").querySelectorAll("path").length;
+      const few = /точек пока|накапливается/.test((q("#trend-body") || {}).textContent || "");
+      return `showMax=${localStorage.getItem("mc_trend_max")}, линий=${paths}${few ? " (мало точек — заглушка)" : ""}`;
+    }, () => {
+      const body = q("#trend-body");
+      if (!body) return false;
+      /* при 0–1 точке график честно показывает заглушку «история накапливается» */
+      return body.querySelectorAll("path").length >= 2 || /точек пока|накапливается/.test(body.textContent || "");
+    });
 
     await step("Пульт: кнопка «Обновить» (перечитывает данные)", async () => {
       const n0 = FETCHES;

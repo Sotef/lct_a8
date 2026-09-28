@@ -429,6 +429,51 @@ def test_clock_buttons_and_reset_keeps_human_data(client):
     assert client.get(B + "/meta/clock", headers=hc).json()["error"] is None
 
 
+# === 9. Регресс: «Заново с января» и бакеты прошлого круга ========================
+def test_history_and_top_risks_ignore_previous_cycle(client, monkeypatch):
+    """После перезапуска реплея в таблице остаются бакеты прошлого круга (дальние месяцы).
+
+    «Актуальные» запросы (тренд риска, топ-риски, алерты) должны смотреть на текущий круг
+    (не позже сим-времени), иначе UI показывает устаревшую и почти пустую картину.
+    """
+    import datetime as _dt
+
+    from app.services import prediction_service as ps
+
+    db = dbmod.SessionLocal()
+    if db.get(dbm.ChannelRef, "CH7") is None:
+        db.add(dbm.ChannelRef(channel_id="CH7", object_id="OBJ1",
+                              sensor_type="Состояние насоса", sensor_name="Насос 7"))
+    # свежий бакет текущего круга и «хвост» прошлого круга (дальний месяц)
+    surv = [0.01, 0.02, 0.03, 0.05, 0.35, 0.5, 0.9]
+    for ts, risk in [(_dt.datetime(2026, 1, 2), 0.55), (_dt.datetime(2026, 6, 30, 18), 0.99)]:
+        db.add(dbm.Prediction(task="wear", channel_id="CH7", object_id="OBJ1", bucket_ts=ts,
+                              p24=0.3, p72=0.5, p7d=0.7, risk30=risk, risk30_cal=risk,
+                              exp_days=4.0, score=risk, severity=0.8, scale=1.0,
+                              plan="текущий квартал", surv_points=surv, event_flag=0,
+                              obs_days=2.0, model_version="test-cycle"))
+    db.commit()
+    db.close()
+
+    # сим-время — 03.01.2026 (первый круг ещё в январе)
+    monkeypatch.setattr(ps, "_sim_bucket_dt", lambda: _dt.datetime(2026, 1, 3))
+
+    rh = client.get(B + "/meta/risk-history?task=wear&n=120&measure=risk30",
+                    headers=tok(client, "disp.t")).json()
+    stamps = [r["bucket_ts"] for r in rh["rows"]]
+    assert stamps, "тренд пуст"
+    assert all(s[:10] <= "2026-01-02" for s in stamps), stamps[-3:]
+    assert not any(s.startswith("2026-06-30") for s in stamps), "в тренд попал прошлый круг"
+
+    tr = client.get(B + "/top-risks?task=wear&k=100&horizon=30d",
+                    headers=tok(client, "disp.t")).json()
+    assert tr["items"], "топ-рисков нет"
+    assert any(i["ид_канала_данных"] == "CH7" for i in tr["items"]), "нет свежего бакета CH7"
+    ch = client.get(B + "/meta/channel-history?task=wear&channel_id=CH7&n=30",
+                    headers=tok(client, "disp.t")).json()
+    assert ch["rows"] and all(r["bucket_ts"][:10] <= "2026-01-02" for r in ch["rows"]), ch["rows"]
+
+
 # === 8. Отчёт по времени операций ================================================
 def test_report_timings(client):
     lines = ["| операция | время, мс | ok |", "|---|---|---|"]

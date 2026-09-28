@@ -268,14 +268,41 @@ def _p7d(surv_points) -> float | None:
         return None
 
 
+def _sim_bucket_dt() -> dt.datetime | None:
+    """Дата начала текущего бакета сим-часов (реплей). None — часы выключены/не готовы."""
+    try:
+        from ..workers import ingestion, simclock
+        st = simclock.clock_status() or {}
+        b = st.get("bucket")
+        try:
+            b = int(b)
+        except (TypeError, ValueError):
+            return None
+        ts = ingestion._bucket_ts(b)                     # pandas.Timestamp
+        return ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else dt.datetime(ts)
+    except Exception:                      # noqa: BLE001 — часы не должны ломать чтение прогнозов
+        return None
+
+
 def latest_bucket_ts(db: Session, task: str):
     """Максимальный bucket_ts хранимых прогнозов задачи (datetime | None).
 
-    Служебные «закреплённые» строки (метки решений, `pinned=1`) не учитываются —
-    иначе после перезапуска реплея текущим считался бы бакет прошлого круга.
+    Служебные «закреплённые» строки (метки решений, `pinned=1`) не учитываются — иначе после
+    перезапуска реплея текущим считался бы бакет прошлого круга.
+
+    В режиме реплея «актуальным» считается последний посчитанный бакет ТЕКУЩЕГО круга —
+    не позже текущего сим-времени. Без этого после кнопки «Заново с января» тренд, топ-риски
+    и алерты цеплялись бы за бакеты прошлого круга (дальние месяцы), и интерфейс показывал бы
+    устаревшую и почти пустую картину.
     """
-    return db.query(func.max(dbm.Prediction.bucket_ts)).filter(
-        dbm.Prediction.task == task, dbm.current_only()).scalar()
+    base = db.query(func.max(dbm.Prediction.bucket_ts)).filter(
+        dbm.Prediction.task == task, dbm.current_only())
+    top = _sim_bucket_dt()
+    if top is not None:
+        got = base.filter(dbm.Prediction.bucket_ts <= top).scalar()
+        if got is not None:
+            return got
+    return base.scalar()
 
 
 def top_risks(task: str, k: int = 200, active_only: bool = False,
