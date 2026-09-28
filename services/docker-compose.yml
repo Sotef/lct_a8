@@ -51,11 +51,20 @@ x-api-env: &api-env
   MOBILE_REFRESH_DAYS: ${MOBILE_REFRESH_DAYS:-30}
   # --- Реплей демо-данных 2026 (симулированные часы) ---
   SIM_CLOCK: ${SIM_CLOCK:-1}
+  SIM_YEAR: ${SIM_YEAR:-2026}
   SIM_START: ${SIM_START:-2026-01-01T00:00:00}
   SIM_TICK_REAL_SEC: ${SIM_TICK_REAL_SEC:-75}
   SIM_LOOP: ${SIM_LOOP:-1}
   RUN_SCHEDULER: ${RUN_SCHEDULER:-0}
   SHAP_TOP_K: ${SHAP_TOP_K:-400}
+  # --- Живая подача из журнала (как в реальной работе) ---
+  # SIM_FEED=1: на каждом тике сервис сам читает хвост грязного ext-journal-*.csv,
+  # агрегирует, пересобирает признаки из накопленного кэша и инференсит текущий бакет
+  SIM_FEED: ${SIM_FEED:-0}
+  SIM_FEED_CHUNK: ${SIM_FEED_CHUNK:-200000}
+  SIM_FEED_END: ${SIM_FEED_END:-}
+  SIM_FEED_REBUILD: ${SIM_FEED_REBUILD:-1}
+  SIM_FEED_WARMUP: ${SIM_FEED_WARMUP:-1}
   # --- Превентивные заявки ---
   AUTO_TICKETS: ${AUTO_TICKETS:-1}
   AUTO_TICKETS_MIN_RISK: ${AUTO_TICKETS_MIN_RISK:-0.5}

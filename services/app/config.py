@@ -57,11 +57,36 @@ STREAM_SOURCE = _p("STREAM_SOURCE", str(EXTRACTED_DIR / "ext-journal-2026.csv"))
 # каждые SIM_TICK_REAL_SEC секунд реального времени сим-время продвигается на
 # 6ч (один бакет) и все 4 задачи пересчитываются. Прогнозы попадают в сезонность.
 SIM_CLOCK = os.getenv("SIM_CLOCK", "1") == "1"
+# Год данных журнала, на котором работает сервис (файл ext-journal-<год>.csv)
+SIM_YEAR = os.getenv("SIM_YEAR", "2026")
 SIM_START = os.getenv("SIM_START", "2026-01-01T00:00:00")
 SIM_TICK_REAL_SEC = int(os.getenv("SIM_TICK_REAL_SEC", "75"))
 # SIM_LOOP=1: дойдя до конца периода (panel_max), реплей начинается заново с SIM_START
 # (прогнозы/решения/заявки предыдущего круга сбрасываются) — демо живёт бесконечно.
 SIM_LOOP = os.getenv("SIM_LOOP", "1") == "1"
+
+# --- Живая подача данных из журнала (как в реальной работе) ---------------------
+# SIM_FEED=1: на каждом тике сервис сам читает НОВЫЙ ХВОСТ грязного ext-journal-*.csv,
+# агрегирует его (adapters/journal), пересобирает признаки/панель из накопленного кэша
+# и инференсит текущий бакет. Предзагруженные панели research/dataset при этом не
+# используются: кэш и панели живут в отдельном каталоге STREAM_DIR.
+SIM_FEED = os.getenv("SIM_FEED", "0") == "1"
+# Читать журнал порциями (строк за один read_csv), SIM_FEED_CHUNK
+SIM_FEED_CHUNK = int(os.getenv("SIM_FEED_CHUNK", "200000"))
+# Конец периода подачи (ISO-дата/время). Пусто -> определяется по последней строке журнала.
+SIM_FEED_END = os.getenv("SIM_FEED_END", "")
+# Пересобирать признаки на каждом тике (для режима подачи — обязательно)
+SIM_FEED_REBUILD = os.getenv("SIM_FEED_REBUILD", "1") == "1"
+# SIM_FEED_WARMUP=1: перед стартом подачи «дочитать» журнал до SIM_START, чтобы у признаков
+# была история (иначе первые бакеты — холодный старт). Данные после SIM_START не берутся.
+SIM_FEED_WARMUP = os.getenv("SIM_FEED_WARMUP", "1") == "1"
+
+# Каталог «живой подачи»: отдельный кэш/панели, чтобы не смешивать с предзагруженными
+# данными research. В режиме SIM_FEED сервис читает журнал и строит признаки сам.
+STREAM_DIR = DATA_DIR / "stream"
+if SIM_FEED:
+    RAW_DIR = STREAM_DIR / "raw"
+    PANEL_DIR = STREAM_DIR / "panels"
 
 
 # --- Логирование -----------------------------------------------------------------
@@ -107,7 +132,8 @@ ATTACH_MAX_MB = int(os.getenv("ATTACH_MAX_MB", "5"))
 
 
 def ensure_dirs() -> None:
-    for d in (DATA_DIR, RAW_DIR, PANEL_DIR, EXTRA_DIR, LOG_DIR, ATTACH_DIR):
+    for d in (DATA_DIR, RAW_DIR, PANEL_DIR, EXTRA_DIR, LOG_DIR, ATTACH_DIR,
+              STREAM_DIR, STREAM_DIR / "raw", STREAM_DIR / "panels"):
         d.mkdir(parents=True, exist_ok=True)
 
 

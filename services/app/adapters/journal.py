@@ -242,5 +242,58 @@ class JournalStreamAdapter:
             return pd.DataFrame()
         return pd.read_parquet(self.cache_path).reset_index(drop=True)
 
+    def _merge_aggs(self, cumul_parts: list[pd.DataFrame]) -> pd.DataFrame:
+        """Слить новые агрегаты с кэшем (sum по каналу × бакету) и сохранить parquet."""
+        old = self._read_cache()
+        parts = ([old] if len(old) else []) + [p for p in cumul_parts if len(p)]
+        if not parts:
+            return old
+        df = pd.concat(parts, ignore_index=True)
+        sum_cols = {c: (c, "sum") for c in df.columns
+                    if c not in ("ид_канала_данных", "бакет")}
+        df = (df.groupby(["ид_канала_данных", "бакет"], sort=False).agg(**sum_cols)
+                .reset_index().sort_values(["ид_канала_данных", "бакет"])
+                .reset_index(drop=True))
+        num_cols = [c for c in df.columns if c != "ид_канала_данных"]
+        df[num_cols] = df[num_cols].astype("int64")
+        df["ид_канала_данных"] = df["ид_канала_данных"].astype(str)
+        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_parquet(self.cache_path, index=False)
+        return df
+
+    def append_events(self, raw: pd.DataFrame) -> dict:
+        """Живая подача (SIM_FEED): агрегировать «сырые» строки и дописать в кэш.
+
+        В отличие от `ingest()`, не читает файл, а принимает уже прочитанную порцию
+        (например, 6ч-хвост журнала, который «наступил» по сим-часам).
+        """
+        empty = {"rows_new": 0, "cache_rows": int(len(self._read_cache())),
+                 "max_ts": str(self.checkpoint_ts) if self.checkpoint_ts is not None else None}
+        if raw is None or not len(raw):
+            return empty
+        df = raw.copy()
+        if self.channels:
+            df = df[df["ид_канала_данных"].astype(str).isin(self.channels)]
+        if not len(df):
+            return empty
+        ts = self._parse_ts(df)
+        keep = ts.notna()
+        df, ts = df[keep], ts[keep]
+        if not len(df):
+            return empty
+        agg = self._base_agg(df)
+        if len(agg):
+            agg["ид_канала_данных"] = agg["ид_канала_данных"].astype(str)
+            for col in agg.columns:
+                if col != "ид_канала_данных":
+                    agg[col] = agg[col].astype("int64")
+        merged = self._merge_aggs([agg])
+        max_ts = ts.max()
+        prev = self.checkpoint_ts
+        if prev is None or max_ts > prev:
+            self._save_checkpoint_ts(max_ts)
+        return {"rows_new": int(len(df)), "cache_rows": int(len(merged)),
+                "max_ts": str(max_ts)}
+
     def load_cache(self) -> pd.DataFrame:
         return self._read_cache()

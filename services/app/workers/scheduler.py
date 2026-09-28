@@ -13,6 +13,7 @@ import logging
 import os
 
 from .. import config
+from ..database import SessionLocal
 from . import ingestion, simclock
 
 log = logging.getLogger("scheduler")
@@ -21,12 +22,20 @@ _interval_sec = 6 * 3600
 
 
 async def periodic_prediction_loop() -> None:
-    """Пересчёт прогнозов на актуальном бакете каждые 6ч (реальное время)."""
+    """Пересчёт прогнозов на актуальном бакете каждые 6ч (реальное время).
+
+    SIM_FEED=1 — каждый цикл сначала дочитывает хвост журнала СМВУ (инкрементально,
+    по чекпоинту), затем пересобирает признаки и считает прогнозы: это режим
+    «как в реальной работе» без реплея.
+    """
     while True:
         try:
             db = SessionLocal()
             try:
-                res = ingestion.run_prediction_cycle(db)
+                if config.SIM_FEED:
+                    stat = ingestion.ingest_journal(db, year=config.SIM_YEAR)
+                    log.info("stream tail ingested: %s", stat)
+                res = ingestion.run_prediction_cycle(db, recompute_panel=config.SIM_FEED)
                 log.info("periodic prediction done: %s", res)
             finally:
                 db.close()

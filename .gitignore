@@ -49,6 +49,8 @@ services/data/raw/
 !services/data/raw/
 services/data/raw/*
 !services/data/raw/buckets_2026.parquet
+# каталог живой подачи (SIM_FEED=1): кэш/панели, которые сервис строит сам
+services/data/stream/
 services/data/*.db-*
 services/.venv/
 services/*.log

@@ -42,6 +42,7 @@ _state: dict = {
 }
 _subjects: dict = {}
 _models: dict = {}
+_feed = None                      # JournalFeed для режима живой подачи (SIM_FEED=1)
 _warm_lock = threading.Lock()
 _stop = threading.Event()
 _wake = threading.Event()     # досрочное пробуждение цикла (шаг/сброс/пауза)
@@ -118,7 +119,14 @@ def _fresh_start(db) -> int:
 
 
 def _panel_max_bucket() -> int:
-    """Максимальный бакет данных в панелях (конец реплея)."""
+    """Максимальный бакет данных: конец реплея.
+
+    SIM_FEED=1 — горизонт задаёт сам журнал (последняя строка), т.к. панели строятся
+    на каждый тик только из уже «наступивших» данных.
+    """
+    if config.SIM_FEED:
+        from . import stream
+        return stream.journal_end_bucket()
     mx = None
     for task in TASKS:
         p = config.PANEL_DIR / f"subdaily_panel_{task}6h_2026.csv"
@@ -135,6 +143,42 @@ def _warm(task: str):
         _models[task] = ml_registry.load_registry_task(task)
     if task not in _subjects:
         _subjects[task] = fp.build_subjects(task, recompute_panel=False)
+
+
+# --- живая подача (SIM_FEED=1) ------------------------------------------------
+def _get_feed():
+    """Ленивый запуск потоковой подачи журнала (только при SIM_FEED=1)."""
+    global _feed
+    if _feed is None:
+        from . import stream
+        _feed = stream.JournalFeed()
+        log.info("stream feed: журнал=%s, кэш=%s, панели=%s, чанк=%s строк",
+                 _feed.adapter.source, config.RAW_DIR, config.PANEL_DIR, _feed.chunksize)
+    return _feed
+
+
+def _reset_feed() -> None:
+    """Новый круг реплея в режиме подачи: забыть кэш/панели и читать журнал заново."""
+    global _feed
+    _feed = None
+    removed = 0
+    for d, pat in ((config.RAW_DIR, "*.parquet"), (config.PANEL_DIR, "*.csv")):
+        for p in d.glob(pat):
+            try:
+                p.unlink()
+                removed += 1
+            except OSError:
+                pass
+    for p in config.RAW_DIR.glob("checkpoint_*.json"):
+        try:
+            p.unlink()
+            removed += 1
+        except OSError:
+            pass
+    for task in TASKS:                 # субъекты больше не валидны
+        _subjects.pop(task, None)
+    if removed:
+        log.info("stream feed: сброшено %s файлов кэша/панелей (новый круг)", removed)
 
 
 def _compute_bucket(bucket: int) -> dict:
@@ -155,15 +199,28 @@ def _compute_bucket(bucket: int) -> dict:
 def _compute_task(task: str, bucket: int, with_factors: bool):
     db = SessionLocal()
     try:
-        with _warm_lock:
-            _warm(task)
-        res = prediction_service.compute_and_store_bucket(
-            task, bucket, db, _models, subjects=_subjects[task],
-            with_factors=with_factors)
+        if config.SIM_FEED:
+            # живая подача: признаки пересобираются из накопленного кэша на каждом тике
+            with _warm_lock:
+                if task not in _models:
+                    _models[task] = ml_registry.load_registry_task(task)
+            res = prediction_service.compute_and_store_bucket(
+                task, bucket, db, _models, subjects=None,
+                recompute_panel=config.SIM_FEED_REBUILD, with_factors=with_factors)
+        else:
+            with _warm_lock:
+                _warm(task)
+            res = prediction_service.compute_and_store_bucket(
+                task, bucket, db, _models, subjects=_subjects[task],
+                with_factors=with_factors)
         if not res.get("n_subjects"):
-            log.warning("bucket %s task %s: субъектов нет — панель не покрывает бакет "
-                        "(пересоберите панели: scripts/run_demo.py --recompute-panel)",
-                        bucket, task)
+            if config.SIM_FEED:
+                log.info("bucket %s task %s: событий этой задачи в бакете пока нет "
+                         "(живая подача, накопится на следующих тиках)", bucket, task)
+            else:
+                log.warning("bucket %s task %s: субъектов нет — панель не покрывает бакет "
+                            "(пересоберите панели: scripts/run_demo.py --recompute-panel)",
+                            bucket, task)
         return res.get("n_stored", 0)
     except Exception as exc:  # noqa: BLE001
         log.exception("tick %s task %s failed", bucket, task)
@@ -179,11 +236,20 @@ def _loop() -> None:
         b = _settings_get(db, "sim_bucket")
         if b is None:
             b = _fresh_start(db)
+            if config.SIM_FEED:
+                _reset_feed()          # первый запуск: подача начинается «с чистого листа»
         _state["bucket"] = int(b)
     finally:
         db.close()
     _state["panel_max"] = _panel_max_bucket()
     _load_options()
+    if config.SIM_FEED and config.SIM_FEED_WARMUP:
+        try:                            # история к SIM_START (без заглядывания вперёд)
+            wst = _get_feed().ingest_until(_state["bucket"] - 1)
+            log.info("stream feed: прогрев до старта — принято %s строк, кэш %s строк",
+                     wst.get("rows_due"), wst.get("cache_rows"))
+        except Exception:  # noqa: BLE001
+            log.exception("stream feed warmup failed")
     log.info("sim-clock started: bucket=%s (%s), panel_max=%s (%s), tick=%ss, loop=%s, "
              "fast_factors=%s, parallel=%s",
              _state["bucket"], ts_of(_state["bucket"]), _state["panel_max"],
@@ -200,7 +266,16 @@ def _loop() -> None:
         t0 = time.time()
         try:
             _db = SessionLocal()
-            counts = _compute_bucket(_state["bucket"])
+            counts: dict = {}
+            if config.SIM_FEED:
+                try:                       # данные «пришли» на этот бакет
+                    fst = _get_feed().ingest_until(_state["bucket"])
+                    counts.update({"feed_rows": fst.get("rows_due"),
+                                   "feed_cache_rows": fst.get("cache_rows"),
+                                   "feed_sec": fst.get("last_sec")})
+                except Exception:  # noqa: BLE001
+                    log.exception("stream feed failed")
+            counts.update(_compute_bucket(_state["bucket"]))
             _settings_set(_db, "sim_bucket", _state["bucket"])
             if config.AUTO_TICKETS:
                 try:
@@ -351,6 +426,8 @@ def _restart_replay() -> int:
         b = _fresh_start(db)
     finally:
         db.close()
+    if config.SIM_FEED:
+        _reset_feed()                  # новый круг: журнал подаётся заново
     _state["bucket"] = int(b)
     _state["last_counts"] = None
     _state["error"] = None
@@ -429,6 +506,20 @@ def clock_status() -> dict:
     total = max(1, (_state["panel_max"] or start) - start)
     # фактический темп: пауза между тиками = max(интервал, длительность расчёта)
     eff = max(float(_state["tick_sec"] or 75), float(_state["last_tick_sec"] or 0)) or 75.0
+    # состояние живой подачи (SIM_FEED=1)
+    if config.SIM_FEED:
+        if _feed is not None:
+            feed = {"enabled": True, "source": str(_feed.adapter.source),
+                    "cache_dir": str(config.RAW_DIR), "panel_dir": str(config.PANEL_DIR),
+                    "rows_due": _feed.stats["rows_due"], "rows_read": _feed.stats["rows_read"],
+                    "cache_rows": _feed.stats["cache_rows"], "max_ts": _feed.stats["max_ts"],
+                    "last_sec": _feed.stats["last_sec"], "eof": _feed.stats["eof"],
+                    "chunksize": _feed.chunksize}
+        else:
+            feed = {"enabled": True, "source": str(config.STREAM_SOURCE),
+                    "cache_dir": str(config.RAW_DIR), "panel_dir": str(config.PANEL_DIR)}
+    else:
+        feed = {"enabled": False}
     return {
         "mode": "replay-2026",
         "sim_now": ts_of(b) if b is not None else None,
@@ -455,4 +546,5 @@ def clock_status() -> dict:
         "computing": _state["computing"],
         "last_counts": _state["last_counts"],
         "error": _state["error"],
+        "feed": feed,
     }

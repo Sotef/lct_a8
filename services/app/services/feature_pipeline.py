@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import pathlib
 
 import numpy as np
@@ -23,6 +24,8 @@ from .. import config
 from .. import task_cfg
 from ..adapters.journal import bucket_to_timestamp
 from ..research_bridge import module as _m
+
+log = logging.getLogger("features")
 
 
 class PanelBuildError(RuntimeError):
@@ -94,9 +97,18 @@ def build_subdaily_panel(task: str, raw_parts: list[pd.DataFrame],
         parts.append(part[keep])
     if not parts:
         raise PanelBuildError(f"[{task}] пустой сырой кэш для панели")
+    if sum(len(p) for p in parts) == 0:
+        return pd.DataFrame()          # у задачи пока нет событий (живая подача)
     out = fe.DATASET if out_csv is None else pathlib.Path(out_csv)
-    panel = fe.make_subdaily_panel(types=cfg["types"], recompute=False,
-                                   out_csv=out, extra_cols=extra, precomputed=parts)
+    try:
+        panel = fe.make_subdaily_panel(types=cfg["types"], recompute=False,
+                                       out_csv=out, extra_cols=extra, precomputed=parts)
+    except KeyError as exc:
+        # research-панель рассчитана на полный датасет; в живой подаче на первых бакетах
+        # по задаче может ещё не хватать событий/типов каналов — прогноз появится позже
+        log.warning("[%s] панель пока не строится (недостаточно данных в бакетах): %s",
+                    task, exc, exc_info=True)
+        return pd.DataFrame()
     panel["ид_канала_данных"] = panel["ид_канала_данных"].astype(str)
     panel["ид_объект"] = panel["ид_объект"].astype(str)
     return panel
@@ -200,26 +212,50 @@ def build_subjects(task: str, recompute_panel: bool = True,
                                   f"— запустите адаптер журнала")
         parts.append(pd.read_parquet(p))
     csv = config.PANEL_DIR / f"subdaily_panel_{task}6h_2026.csv"
-    if recompute_panel or not csv.exists():
-        panel = build_subdaily_panel(task, parts, out_csv=csv)
-        panel = apply_post_task_features(panel, task)
-        panel.to_csv(csv, index=False, encoding="utf-8-sig")
-    else:
-        panel = pd.read_csv(csv, dtype={"ид_канала_данных": str,
-                                        "ид_объект": str})
-    panel = apply_train_z_stats(panel, task)
-    panel = apply_series_and_labels(panel, task)
-    subjects = apply_cat_codes(panel, task)
-    subjects = align_to_schema(subjects, task)
+    try:
+        if recompute_panel or not csv.exists():
+            panel = build_subdaily_panel(task, parts, out_csv=csv)
+            if panel is None or not len(panel) or "ид_канала_данных" not in panel.columns:
+                return pd.DataFrame()
+            panel = apply_post_task_features(panel, task)
+            panel.to_csv(csv, index=False, encoding="utf-8-sig")
+        else:
+            panel = pd.read_csv(csv, dtype={"ид_канала_данных": str,
+                                            "ид_объект": str})
+        if panel is None or not len(panel) or "ид_канала_данных" not in panel.columns:
+            # живая подача: на первых бакетах у задачи может ещё не быть событий
+            return pd.DataFrame()
+        panel = apply_train_z_stats(panel, task)
+        panel = apply_series_and_labels(panel, task)
+        subjects = apply_cat_codes(panel, task)
+        subjects = align_to_schema(subjects, task)
+    except KeyError as exc:
+        # research-панель/деривативы рассчитаны на полный датасет: в живой подаче
+        # на ранних бакетах по задаче может не хватать событий/типов каналов.
+        # Прогноз по задаче появится, когда данных накопится достаточно.
+        log.warning("[%s] признаки пока не собираются (мало данных): %s", task, exc)
+        try:
+            csv.unlink(missing_ok=True)      # чтобы не читать неполный кэш панели
+        except OSError:
+            pass
+        return pd.DataFrame()
     return subjects
 
 
 def subjects_for_bucket(subjects: pd.DataFrame, bucket: int) -> pd.DataFrame:
-    """Субъекты конкретного бакета (каналы, активные в этот 6ч-интервал)."""
+    """Субъекты конкретного бакета (каналы, активные в этот 6ч-интервал).
+
+    В режиме живой подачи панель на первых бакетах может быть пустой (данных ещё нет) —
+    тогда корректно возвращаем пустую выборку, а не падаем с KeyError.
+    """
+    if subjects is None or not len(subjects) or "бакет" not in subjects.columns:
+        return pd.DataFrame()
     return subjects[subjects["бакет"] == bucket].reset_index(drop=True)
 
 
 def latest_bucket(subjects: pd.DataFrame) -> int:
+    if subjects is None or not len(subjects) or "бакет" not in subjects.columns:
+        raise PanelBuildError("в панели нет строк — нет данных для прогноза")
     return int(subjects["бакет"].max())
 
 
