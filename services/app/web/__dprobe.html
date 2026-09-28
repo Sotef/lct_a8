@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>dprobe</title>
+<link rel="stylesheet" href="/css/themes.css"><link rel="stylesheet" href="/css/core.css">
+<link rel="stylesheet" href="/css/shell.css"><link rel="stylesheet" href="/css/topbar.css">
+<link rel="stylesheet" href="/css/components.css"><link rel="stylesheet" href="/css/buttons.css">
+<link rel="stylesheet" href="/css/widgets.css"><link rel="stylesheet" href="/css/overlays.css">
+<link rel="stylesheet" href="/css/overlays2.css"><link rel="stylesheet" href="/css/pages.css">
+<link rel="stylesheet" href="/css/pages2.css"><link rel="stylesheet" href="/css/anim.css">
+<link rel="stylesheet" href="/css/mobile.css">
+</head>
+<body data-theme="obsidian">
+<div id="app"></div>
+<pre id="probe-out" style="position:fixed;left:0;bottom:0;z-index:9999;font:10px monospace;background:#000;color:#0f0;
+  max-height:40vh;overflow:auto;margin:0;padding:4px;white-space:pre-wrap"></pre>
+<script src="/js/icons.js"></script><script src="/js/ui.js"></script><script src="/js/bgfx.js"></script>
+<script src="/js/fx.js"></script><script src="/js/mobile/offline.js"></script><script src="/js/api.js"></script>
+<script src="/js/mobile/push.js"></script><script src="/js/mobile/photo.js"></script>
+<script src="/js/charts.js"></script>
+<script src="/js/charts2.js"></script><script src="/js/charts3.js"></script><script src="/js/overlays.js"></script>
+<script src="/js/cmdk.js"></script><script src="/js/card_forecast.js"></script><script src="/js/card_object.js"></script>
+<script src="/js/notify.js"></script><script src="/js/view_alerts.js"></script>
+<script src="/js/view_dashboard.js"></script><script src="/js/view_objects.js"></script>
+<script src="/js/view_graph.js"></script><script src="/js/view_forecasts.js"></script><script src="/js/view_plan.js"></script>
+<script src="/js/view_tickets.js"></script><script src="/js/view_audit.js"></script><script src="/js/view_sys.js"></script>
+<script src="/js/view_users.js"></script><script src="/js/login.js"></script><script src="/js/mobile/shell.js"></script>
+<script src="/js/app.js"></script>
+<script>
+/* __dprobe.html — проверка гонки при переключении горизонта в «Тренде риска».
+   Сценарий: ответ по measure=p24 искусственно задерживается (3 с), поэтому его ответ
+   приходит ПОСЛЕ ответа по measure=risk30. График должен остаться на выбранном risk30. */
+window.__errs = [];
+addEventListener("error", e => __errs.push("ERR:" + (e.message || "?")));
+addEventListener("unhandledrejection", e => __errs.push("REJ:" + ((e.reason && e.reason.message) || e.reason)));
+const out = document.getElementById("probe-out");
+const log = s => { out.textContent += s + "\n"; };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+let fails = 0;
+const chk = (n, c, extra) => { if (!c) { fails++; log("FAIL " + n + (extra ? " :: " + extra : "")); } else log("ok   " + n); };
+
+const resolved = {};               // порядок прихода ответов
+let seq = 0;
+
+window.addEventListener("load", async () => {
+  try {
+    const r = await API.post("/auth/login", { username: "central.operator", password: "central123" });
+    API.store.token = r.access_token; API.store.refresh = r.refresh_token; API.store.user = r.user;
+    document.querySelectorAll(".login-wrap,.veil,.modal-wrap").forEach(n => n.remove());
+    App.shell(); MOBILE.enhance(document.getElementById("shell") || document.body, { navigate: App.navigate });
+
+    // замедляем именно p24: его ответ придёт последним
+    const origGet = API.get;
+    API.get = (p, ttl) => {
+      const s = String(p);
+      const delayed = s.includes("risk-history") && s.includes("measure=p24");
+      const pr = origGet(p, ttl);
+      if (!delayed) return pr;
+      return new Promise(res => setTimeout(() => pr.then(v => { resolved["p24"] = ++seq; res(v); }), 3000));
+    };
+    const unwrap = API.get;
+    API.get = (p, ttl) => {
+      const s = String(p);
+      const pr = unwrap(p, ttl);
+      if (s.includes("risk-history") && s.includes("measure=risk30"))
+        return pr.then(v => { resolved["risk30"] = ++seq; return v; });
+      return pr;
+    };
+
+    localStorage.setItem("mc_trend_measure", "risk30");
+    await App.navigate("dashboard");
+    await sleep(2500);                                  // пульт отрисован, тренд нарисован
+
+    const btn = m => [...document.querySelectorAll("#tseg button")].find(b => b.dataset.m === m);
+    chk("сегменты горизонта есть", !!btn("p24") && !!btn("risk30"));
+    btn("p24").click();                                 // запускаем «медленный» p24
+    await sleep(250);
+    btn("risk30").click();                              // сразу переключаемся на risk30
+    await sleep(4200);                                  // ждём прихода устаревшего ответа p24
+
+    const faints = [...document.querySelectorAll("#trend-body .faint")];
+    const hint = (faints[0] || {}).textContent || "";                      // подсказка внутри графика
+    const footer = (faints[faints.length - 1] || {}).textContent || "";    // подпись под графиком
+    const svg = !!document.querySelector("#trend-body svg");
+    const m = hint.match(/сейчас:\s*([\d.,]+)/);
+    const nowVal = m ? parseFloat(m[1].replace(",", ".")) : NaN;
+    log("ответы: risk30 #" + resolved["risk30"] + ", p24 #" + resolved["p24"]);
+    log("подсказка графика: «" + hint.trim().replace(/\s+/g, " ") + "»");
+    log("подпись под графиком: «" + footer.trim().replace(/\s+/g, " ") + "»");
+    chk("график отрисован", svg);
+    chk("p24 ответил ПОЗЖЕ risk30 (гонка воспроизведена)",
+      resolved["p24"] > resolved["risk30"], JSON.stringify(resolved));
+    chk("на экране остался ВЫБРАННЫЙ горизонт «риск 30 дней»", /риск 30 дней/.test(footer), footer);
+    chk("устаревший p24 НЕ перетёр график", !/≤ 24 ч/.test(footer), footer);
+    chk("масштаб графика — risk30, а не p24 (значение «сейчас» ≥ 0.3)",
+      nowVal >= 0.3, "сейчас=" + nowVal);
+    chk("кнопка «30 дней» активна", (btn("risk30") || {}).classList?.contains("on"));
+    log("ERRORS=" + __errs.length + (__errs.length ? " :: " + __errs.slice(0, 4).join(" | ") : ""));
+    document.title = (fails === 0 && __errs.length === 0) ? "DPROBE OK" : "DPROBE FAIL " + fails + "/" + __errs.length;
+  } catch (e) {
+    log("EXCEPTION: " + (e && e.message));
+    document.title = "DPROBE EXCEPTION";
+  }
+});
+</script>
+</body>
+</html>

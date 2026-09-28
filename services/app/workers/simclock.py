@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import pathlib
 import threading
 import time
 
@@ -96,6 +97,11 @@ def _fresh_start(db) -> int:
     T = dbm.MaintenanceTask
     machine = and_(T.source == "auto", T.status == "suggested",
                    T.assigned_to.is_(None), T.scheduled_at.is_(None), T.comment.is_(None))
+    # Заявки с вложениями (фото с объекта) считаем «человеческими»: их нельзя удалять —
+    # на них ссылается attachments.ticket_id (FK), и в поле их явно касался человек.
+    attach_ids = [r[0] for r in db.query(dbm.Attachment.ticket_id).distinct().all() if r[0]]
+    if attach_ids:
+        machine = and_(machine, ~T.id.in_(attach_ids))
     # 1) прогнозы, на которые ссылаются решения, «закрепляем» (метки для дообучения)
     pinned_ids = [r[0] for r in db.query(dbm.Decision.prediction_id).distinct().all() if r[0]]
     n_pinned = 0
@@ -106,15 +112,31 @@ def _fresh_start(db) -> int:
     # 2) человеческие заявки сохраняем, снимая ссылку на удаляемый прогноз
     n_keep = (db.query(T).filter(not_(machine))
               .update({"prediction_id": None}, synchronize_session=False))
-    n_machine = db.query(T).filter(machine).delete(synchronize_session=False)
-    # 3) прогнозы без метки удаляются — реплей пересчитает их на новом круге
+    # 3) предложения автоформирования удаляем. Вложения у них сначала чистим
+    #    (строки + файлы), иначе FK не даст удалить заявку и цикл сим-часов упадёт.
+    machine_ids = [r[0] for r in db.query(T.id).filter(machine).all()]
+    n_att = 0
+    if machine_ids:
+        for a in db.query(dbm.Attachment).filter(dbm.Attachment.ticket_id.in_(machine_ids)).all():
+            try:
+                pathlib.Path(a.stored_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+            db.delete(a)
+            n_att += 1
+        if n_att:
+            db.flush()
+    n_machine = (db.query(T).filter(T.id.in_(machine_ids)).delete(synchronize_session=False)
+                 if machine_ids else 0)
+    # 4) прогнозы без метки удаляются — реплей пересчитает их на новом круге
     #    (условие current_only защищает и от строк с NULL в pinned)
     n_pred = db.query(dbm.Prediction).filter(dbm.current_only()).delete(synchronize_session=False)
     _settings_set(db, "sim_bucket", start)
     db.commit()
     log.info("sim-clock fresh start: bucket=%s (%s); predictions wiped=%s pinned=%s; "
-             "tickets kept=%s, machine suggestions removed=%s; решения и аудит сохранены",
-             start, ts_of(start), n_pred, n_pinned, n_keep, n_machine)
+             "tickets kept=%s (из них с вложениями=%s, attachments removed=%s), "
+             "machine suggestions removed=%s; решения и аудит сохранены",
+             start, ts_of(start), n_pred, n_pinned, n_keep, len(attach_ids), n_att, n_machine)
     return start
 
 
@@ -474,14 +496,24 @@ def step(n: int = 1) -> dict:
 
 
 def _safeloop() -> None:
-    """Обёртка: падение цикла фиксируется в state (видно в /meta/clock)."""
-    try:
-        _loop()
-    except Exception:  # noqa: BLE001
-        import traceback
-        _state["error"] = "".join(traceback.format_exc())[-1500:]
-        _state["running"] = False
-        log.exception("sim-clock loop died")
+    """Обёртка: падение цикла фиксируется в state, но НЕ убивает демо.
+
+    Раньше исключение внутри `_loop()` (например, FK при перезапуске круга) навсегда
+    останавливало сим-часы до перезапуска контейнера. Теперь после ошибки цикл
+    перезапускается через паузу, а текст исключения доступен в `/meta/clock` → `error`.
+    """
+    while not _stop.is_set():
+        try:
+            _loop()
+        except Exception:  # noqa: BLE001
+            import traceback
+            _state["error"] = "".join(traceback.format_exc())[-1500:]
+            log.exception("sim-clock loop error — перезапуск через 30 с")
+        if _stop.is_set():
+            break
+        if _sleep(30):
+            break
+    _state["running"] = False
 
 
 def start() -> None:

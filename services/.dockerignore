@@ -36,3 +36,4 @@ pip.conf
 # dev-страницы headless-прогонов (в прод-сборке не нужны)
 app/web/__probe.html
 app/web/__mprobe.html
+app/web/__dprobe.html

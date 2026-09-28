@@ -75,10 +75,21 @@ def compute_and_store_bucket(task: str, bucket: int, db: Session,
 
     version = (model_holder.get(task) or {}).get("model_version", "unknown")
 
+    # Пересчёт бакета: старые прогнозы удаляются. Сначала отвязываем от них заявки —
+    # maintenance_tasks.prediction_id ссылается на predictions.id (FK), и без этого
+    # DELETE падает на бакетах, где автоформирование уже создало заявку (в реплее это
+    # случается при повторном проходе бакета или сбросе круга).
+    old_ids = (db.query(dbm.Prediction.id)
+               .filter(dbm.Prediction.task == task,
+                       dbm.Prediction.bucket_ts == _bucket_ts(bucket),
+                       dbm.current_only()))
+    (db.query(dbm.MaintenanceTask)
+     .filter(dbm.MaintenanceTask.prediction_id.in_(old_ids))
+     .update({"prediction_id": None}, synchronize_session=False))
     db.query(dbm.Prediction).filter(
         dbm.Prediction.task == task,
         dbm.Prediction.bucket_ts == _bucket_ts(bucket),
-        dbm.current_only()).delete()
+        dbm.current_only()).delete(synchronize_session=False)
     # ВАЖНО: коммит сразу — иначе write-lock SQLite держится весь долгий
     # инференс и параллельные записи (audit_log при логине и т.п.) падают
     # с "database is locked".

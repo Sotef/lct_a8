@@ -2,6 +2,8 @@
 """Мета-ручки для веб-интерфейса: доступные бакеты, задачи, настройки фильтров."""
 from __future__ import annotations
 
+import datetime as dt
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -63,6 +65,20 @@ MEASURES = {"risk30": "риск 30 дней", "p24": "P(событие ≤ 24 ч
             "p7d": "P(≤ 7 дней)"}
 
 
+def _hist_window(db: Session, task: str, n: int):
+    """Нижняя граница окна для тренда: последние n 6ч-бакетов.
+
+    Без этого запрос группировал бы ВСЮ историю задачи (в реплее — сотни тысяч строк),
+    из-за чего ответ «тренда» мог задерживаться и приходить в UI с опозданием.
+    Возвращает None, если прогнозов по задаче ещё нет.
+    """
+    last = (db.query(func.max(dbm.Prediction.bucket_ts))
+            .filter(dbm.Prediction.task == task, dbm.current_only()).scalar())
+    if last is None:
+        return None
+    return last - dt.timedelta(hours=6 * max(1, int(n)))      # окно с запасом; срез rows[-n:]
+
+
 @router.get("/meta/risk-history")
 def risk_history(task: str = Query(...), n: int = Query(40, ge=1, le=300),
                  measure: str = Query("risk30", pattern="^(risk30|p24|p72|p7d)$"),
@@ -71,17 +87,23 @@ def risk_history(task: str = Query(...), n: int = Query(40, ge=1, le=300),
     """Агрегат риска по бакетам (тренд для дашборда).
 
     measure: risk30 (по умолчанию) | p24 (1 день) | p72 (3 дня) | p7d (7 дней из S(t)).
+    Сканируются только последние n бакетов (см. _hist_window) — ответ быстрый и
+    не «догоняет» пользователя при длинном реплее.
     """
     if task not in task_cfg.ALL_TASKS:
         raise HTTPException(status_code=400, detail="неизвестная задача")
+    lo = _hist_window(db, task, n)
+    if lo is None:
+        return {"task": task, "measure": measure, "measure_ru": MEASURES[measure], "rows": []}
     if measure == "p7d":
-        return _history_p7d(db, task, n)
+        return _history_p7d(db, task, n, lo)
     col = {"p24": dbm.Prediction.p24, "p72": dbm.Prediction.p72}.get(
         measure, dbm.Prediction.risk30)
     rows = (db.query(dbm.Prediction.bucket_ts,
                      func.avg(col).label("avg"), func.max(col).label("mx"),
                      func.count(dbm.Prediction.id).label("cnt"))
-            .filter(dbm.Prediction.task == task, dbm.current_only())
+            .filter(dbm.Prediction.task == task, dbm.current_only(),
+                    dbm.Prediction.bucket_ts >= lo)
             .group_by(dbm.Prediction.bucket_ts)
             .order_by(dbm.Prediction.bucket_ts.asc()).all())
     out = [{"bucket_ts": r[0].isoformat(),
@@ -91,14 +113,17 @@ def risk_history(task: str = Query(...), n: int = Query(40, ge=1, le=300),
     return {"task": task, "measure": measure, "measure_ru": MEASURES[measure], "rows": out}
 
 
-def _history_p7d(db: Session, task: str, n: int) -> dict:
+def _history_p7d(db: Session, task: str, n: int, lo=None) -> dict:
     """P(≤7 дней) по бакетам — колонка predictions.p7d (считается на тике)."""
-    rows = (db.query(dbm.Prediction.bucket_ts,
-                     func.avg(dbm.Prediction.p7d).label("avg"),
-                     func.max(dbm.Prediction.p7d).label("mx"),
-                     func.count(dbm.Prediction.id).label("cnt"))
-            .filter(dbm.Prediction.task == task, dbm.Prediction.p7d.isnot(None), dbm.current_only())
-            .group_by(dbm.Prediction.bucket_ts)
+    q = (db.query(dbm.Prediction.bucket_ts,
+                  func.avg(dbm.Prediction.p7d).label("avg"),
+                  func.max(dbm.Prediction.p7d).label("mx"),
+                  func.count(dbm.Prediction.id).label("cnt"))
+         .filter(dbm.Prediction.task == task, dbm.Prediction.p7d.isnot(None),
+                 dbm.current_only()))
+    if lo is not None:
+        q = q.filter(dbm.Prediction.bucket_ts >= lo)
+    rows = (q.group_by(dbm.Prediction.bucket_ts)
             .order_by(dbm.Prediction.bucket_ts.asc()).all())
     out = [{"bucket_ts": r[0].isoformat(),
             "avg_risk": round(float(r[1]), 4), "max_risk": round(float(r[2]), 4),

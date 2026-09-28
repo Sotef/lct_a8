@@ -71,6 +71,14 @@ Views.dashboard = (() => {
   /* Тренд риска: свой выбор горизонта (1/3/7/30 дней) и режима «средний/максимум».
      Карточка сама грузит данные — переключение не перерисовывает весь пульт. */
   const MEAS = [["p24", "1 день"], ["p72", "3 дня"], ["p7d", "7 дней"], ["risk30", "30 дней"]];
+  /* Тренд риска: свой выбор горизонта (1/3/7/30 дней) и режима «средний/максимум».
+     Карточка сама грузит данные — переключение не перерисовывает весь пульт.
+
+     Важно: пульт перерисовывается на каждом тике сим-часов и по live-таймеру, поэтому
+     в полёте могут оказаться несколько запросов (например, за старый горизонт или за
+     прежний объект). Ответ устаревшего запроса НЕ должен перетирать актуальный график —
+     для этого служит счётчик поколений trendGen: рисует только самый свежий запрос. */
+  let trendGen = 0;
   function renderTrend(main, state, task) {
     const { el, esc, ic } = UI;
     let measure = localStorage.getItem("mc_trend_measure") || "risk30";
@@ -87,14 +95,18 @@ Views.dashboard = (() => {
        а прошлая кривая остаётся на месте, пока не придут новые данные — без «пропадания». */
     const bodyOf = () => (main && main.querySelector("#trend-body")) || card.querySelector("#trend-body");
     const draw = async () => {
+      const my = ++trendGen;                    // наш номер поколения
       const body = bodyOf();
-      if (!body.querySelector("svg")) {          // скелетон — только когда показывать нечего
+      if (!body) return;
+      if (!body.querySelector("svg")) {         // скелетон — только когда показывать нечего
         body.innerHTML = "";
         body.appendChild(UI.skeleton(1, 200));
       }
-      const d = await API.get(`/meta/risk-history?task=${task}&n=120&measure=${measure}`, 20000)
-        .catch(() => ({ rows: [] }));
-      const live = bodyOf();
+      const q = `/meta/risk-history?task=${task}&n=120&measure=${measure}`;
+      const d = await API.get(q, 20000).catch(() => ({ rows: [] }));
+      if (my !== trendGen) return;              // запущен более свежий запрос — этот ответ устарел
+      const live = bodyOf();                    // узел мог быть подменён морфингом при перерисовке
+      if (!live) return;                        // ушли с раздела — рисовать некуда
       live.innerHTML = "";
       live.appendChild(Charts.trend(d.rows || [], { showMax, h: 250 }));
       if ((d.rows || []).length) {
@@ -229,11 +241,14 @@ Views.dashboard = (() => {
   }
 
   /* лента журнала действий (не для техника: он видит только свой район) */
+  let activityGen = 0;
   async function loadActivity(main, state) {
     const { el, esc, ic } = UI;
     const role = API.store.user && API.store.user.role;
     if (role === "tech") return;
+    const my = ++activityGen;                       // защита от устаревших ответов
     const data = await API.get("/audit?size=9").catch(() => ({ items: [] }));
+    if (my !== activityGen || !main.isConnected) return;   // пришёл ответ прошлого вызова
     const card = el(`<div class="card spot" id="activity" data-keep style="margin-top:16px"><div class="ct">${ic("activity", "s")} Лента действий
       <span class="grow"></span><button class="btn xs ghost" id="ga">журнал аудита →</button></div>
       <div class="alog" style="margin:-12px -18px -12px"></div></div>`);
