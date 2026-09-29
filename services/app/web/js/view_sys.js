@@ -215,7 +215,7 @@ Views.sys = (() => {
     const bar = el(`<div class="toolrow">
       <select id="lv"><option value="">все уровни</option>${["INFO", "WARNING", "ERROR", "DEBUG"].map(l =>
         `<option value="${l}" ${level === l ? "selected" : ""}>${l}+</option>`).join("")}</select>
-      <select id="lg"><option value="">все логгеры</option>${["http", "audit", "maintenance", "main", "admin", "client", "simclock", "uvicorn"]
+      <select id="lg"><option value="">все логгеры</option>${["http", "audit", "incident", "maintenance", "main", "admin", "client", "simclock", "uvicorn"]
         .map(l => `<option value="${l}" ${logger === l ? "selected" : ""}>${l}</option>`).join("")}</select>
       <input type="search" id="lq" placeholder="подстрока в сообщении…" value="${esc(q)}">
       <label class="chk"><input type="checkbox" id="lp" ${paused ? "checked" : ""}> пауза</label>

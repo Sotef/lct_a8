@@ -212,6 +212,9 @@ def events_vs_forecast(task: str = Query(...), n: int = Query(60, ge=1, le=500),
                        alert_q: float | None = Query(None, ge=0.5, le=0.9999),
                        lookback: int = Query(4, ge=1, le=20),
                        campaign_min: int = Query(15, ge=2, le=500),
+                       recent_h: int = Query(24, ge=1, le=24 * 90,
+                                             description="окно «свежих» происшествий, ч (в UI "
+                                                         "показываются постоянно)"),
                        db: Session = Depends(get_db),
                        user: dbm.User = Depends(
                            require_roles("dispatcher", "central", "tech"))):
@@ -232,7 +235,8 @@ def events_vs_forecast(task: str = Query(...), n: int = Query(60, ge=1, le=500),
                                                     channel_id=channel_id, n=n,
                                                     threshold=threshold, alert_q=alert_q,
                                                     lookback=lookback,
-                                                    campaign_min=campaign_min)
+                                                    campaign_min=campaign_min,
+                                                    recent_h=recent_h)
             keep = set(allowed)
             res["items"] = [i for i in res["items"] if str(i.get("object_id")) in keep]
             return res
@@ -240,7 +244,8 @@ def events_vs_forecast(task: str = Query(...), n: int = Query(60, ge=1, le=500),
                                              channel_id=channel_id, n=n,
                                              threshold=threshold, alert_q=alert_q,
                                              lookback=lookback,
-                                             campaign_min=campaign_min)
+                                             campaign_min=campaign_min,
+                                             recent_h=recent_h)
 
 
 @router.get("/meta/channel-history")

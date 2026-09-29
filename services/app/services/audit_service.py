@@ -39,6 +39,7 @@ ACTION_RU = {
     "ticket.status": "смена статуса заявки",
     "ticket.attachment": "вложение фото к заявке",
     "alert.push": "отправка push-уведомления",
+    "incident.journal": "происшествие журнала СМВУ",
     "client.error": "ошибка веб-интерфейса",
 }
 

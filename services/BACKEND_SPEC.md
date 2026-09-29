@@ -197,7 +197,12 @@ severity — `inference_contract.SEVERITY_BY_TYPE`, scale — по числу а
 - **RBAC** по ролям (нужно §6.1); middleware проверяет JWT + разрешения;
   tech — только объекты своего района + «подтвердить состояние на объекте».
 - **Аудит**: все действия пишутся в `audit_log` (обязательно: decision, login,
-  admin-actions). Аудит журнал отсутствует → нельзя сдавать демо (SERVICE_PLAN §3).
+  admin-actions; также `incident.journal` — реальные происшествия журнала СМВУ,
+  §11.2). Аудит журнал отсутствует → нельзя сдавать демо (SERVICE_PLAN §3).
+- **Происшествия ↔ панель**: срабатывания/неисправности бакета логируются логгером
+  `incident` (вкладка «Система») и в `audit_log`; `GET /meta/events?recent_h=24`
+  отдаёт недавние факты постоянно (поле `свежее`, `summary.recent`) — панель не
+  «пропадает» на тиках (см. §11.2).
 - **TLS 1.2+**: termination на reverse-proxy или ключи Uvicorn.
 - CORS для frontend, rate-limit на /auth/login, секреты в `.env`.
 - LDAP/AD через read-only адаптер; на MVP — локальные пользователи (имитация).

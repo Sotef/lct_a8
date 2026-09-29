@@ -88,6 +88,9 @@ class AuditLog(Base):
     detail = Column(JSON)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
+    # индекс для дедупликации происшествий журнала (action='incident.journal')
+    __table_args__ = (Index("ix_audit_action_entity", "action", "entity_id"),)
+
 
 class DataSource(Base):
     __tablename__ = "data_sources"

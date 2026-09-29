@@ -59,12 +59,20 @@ def _ensure_columns() -> None:
                               "age_days": "FLOAT", "norm_due": "TIMESTAMP",
                               "rationale": "TEXT"},
     }
+    indexes = [
+        "CREATE INDEX IF NOT EXISTS ix_audit_action_entity ON audit_log (action, entity_id)",
+    ]
     with engine.begin() as conn:
         for table, cols in migrations.items():
             existing = {c["name"] for c in insp.get_columns(table)}
             for col, ddl in cols.items():
                 if col not in existing:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"))
+        for ddl in indexes:
+            try:
+                conn.execute(text(ddl))
+            except Exception:  # noqa: BLE001 — индекс не критичен для работы
+                pass
 
 
 def get_db():

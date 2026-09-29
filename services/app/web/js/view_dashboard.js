@@ -48,7 +48,7 @@ Views.dashboard = (() => {
     const topCard = renderTop(main, state, task, hz, top, topObj);
     const tkCard = renderTickets(state, tickets);
     const trendCard = renderTrend(main, state, task);
-    const factCard = renderFacts(state);
+    const factCard = renderFacts(main, state);
 
     const g1 = el(`<div class="grid2 rv"><div class="stack"></div><div class="stack"></div></div>`);
     g1.children[0].appendChild(trendCard);
@@ -72,9 +72,14 @@ Views.dashboard = (() => {
   }
 
   /* Реальные происшествия (журнал) против прогнозов: что произошло и когда это предсказали.
-     Карточка грузит данные сама (как тренд), поэтому не тормозит пульт при тиках. */
+
+     Карточка грузит данные сама (как тренд), но, в отличие от первой версии, рисует в ЖИВОЙ
+     узел и хранит последний ответ в кэше — панель не «пропадает» при перерисовке пульта
+     на каждом тике и не требует ручного «обновить». Происшествия за последние 24 ч
+     сим-времени помечены (бейдж «24 ч») и показываются постоянно. */
   let factGen = 0;
-  function renderFacts(state) {
+  const factCache = {};                       // task -> последний ответ /meta/events
+  function renderFacts(main, state) {
     const task = state.task || "wear";
     const card = el(`<div class="card spot rv" id="factcard"><div class="ct">${ic("activity", "s")}
       Реальные происшествия и прогнозы
@@ -84,49 +89,63 @@ Views.dashboard = (() => {
       <div class="row wrap" id="fact-sum" style="gap:8px;margin:8px 0"></div>
       <div class="tscroll" id="fact-body" style="max-height:360px"></div>
       <div class="faint" id="fact-note" style="font-size:11px;margin-top:6px"></div></div>`);
-    const load = async () => {
-      const my = ++factGen;
-      const d = await API.get(`/meta/events?task=${task}&n=60`).catch(() => null);
-      if (my !== factGen || !card.isConnected) return;
-      const sum = card.querySelector("#fact-sum"), body = card.querySelector("#fact-body");
-      const note = card.querySelector("#fact-note"), thr = card.querySelector("#fact-thr");
-      if (!d || !d.summary) {
-        body.innerHTML = UI.emptyState("не удалось получить факты", "alert", "err-state");
-        return;
-      }
+    /* пишем и в новый узел, и в живой (мягкое обновление пульта может подменить узел) */
+    const targets = () => {
+      const live = main && main.querySelector("#factcard");
+      return (live && live !== card) ? [live, card] : [card];
+    };
+    const paint = d => {
       const s = d.summary;
       const pct = v => v === null || v === undefined ? "—" : Math.round(v * 100) + "%";
-      thr.textContent = `порог p24 ≥ ${d.threshold} · ${d.fact_kind}`;
-      sum.innerHTML = [
-        ["событий", s.events, ""],
-        [`предсказано`, `${s.predicted} (${pct(s.recall)})`, s.recall >= 0.5 ? "low" : "mid"],
-        ["алертов", s.alerts, ""], ["попаданий", `${s.hits} (${pct(s.precision)})`, ""],
-        ["упреждение", s.median_lead_h === null ? "—" : s.median_lead_h + " ч", ""],
-        ["ППР (искл.)", s.planned_ppr, "faint"],
-      ].map(([l, v, cls]) => `<span class="badge ${cls}">${esc(l)}: <b>${esc(String(v))}</b></span>`).join("");
-      const it = d.items || [];
-      body.innerHTML = it.length ? `<table class="tbl"><thead><tr>
-          <th>произошло</th><th>что именно</th><th>класс</th><th>предсказано</th></tr></thead><tbody>
-        ${it.slice(0, 40).map(x => `<tr data-pid="${x.prediction_id || ""}" data-fpid="${x.прогноз_prediction_id || ""}"
-            style="cursor:pointer">
-          <td class="num">${esc(x.произошло)}<div class="faint" style="font-size:10px">${esc(x.событий_в_бакете || 0)} соб.</div></td>
-          <td><b>${esc(x.тип_датчика || "—")}</b>${x.название_датчика ? ` · ${esc(x.название_датчика)}` : ""}
-            <div class="faint" style="font-size:10.5px">объект ${esc(x.object_id)}${x.object_name ? " · " + esc(x.object_name) : ""}
-            ${x.похоже_на_ППР ? ' · <span class="badge faint">ППР</span>' : ""}</div></td>
-          <td>${x.группа_события ? `<span class="badge ${x.класс_события === "авария" ? "high" : "mid"}">${esc(x.группа_события)}</span>` : "—"}</td>
-          <td>${x.предсказано
-            ? `<span class="badge low">${esc(x.прогноз_бакет)}</span>
-               <div class="faint" style="font-size:10.5px">за ${x.предсказано_за_ч} ч · p24=${x.прогноз_p24}</div>`
-            : '<span class="badge high">пропущено моделью</span>'}</td></tr>`).join("")}
-      </tbody></table>` : UI.emptyState("в текущем круге реплея происшествий пока нет", "activity");
-      body.querySelectorAll("[data-fpid],[data-pid]").forEach(tr => tr.onclick = () => {
-        const pid = +tr.dataset.fpid || +tr.dataset.pid;
-        if (pid) Cards.forecast.open(pid, { onDecided: () => renderFacts(state) });
+      targets().forEach(h => {
+        const thr = h.querySelector("#fact-thr"), sum = h.querySelector("#fact-sum");
+        const body = h.querySelector("#fact-body"), note = h.querySelector("#fact-note");
+        if (!body) return;
+        thr.textContent = `порог p24 ≥ ${d.threshold} · ${d.fact_kind}`;
+        sum.innerHTML = [
+          ["событий", s.events, ""],
+          [`предсказано`, `${s.predicted} (${pct(s.recall)})`, s.recall >= 0.5 ? "low" : "mid"],
+          ["за 24 ч", s.recent != null ? s.recent : "—", s.recent ? "info" : "faint"],
+          ["алертов", s.alerts, ""], ["попаданий", `${s.hits} (${pct(s.precision)})`, ""],
+          ["упреждение", s.median_lead_h === null ? "—" : s.median_lead_h + " ч", ""],
+          ["ППР (искл.)", s.planned_ppr, "faint"],
+        ].map(([l, v, cls]) => `<span class="badge ${cls}">${esc(l)}: <b>${esc(String(v))}</b></span>`).join("");
+        const it = d.items || [];
+        body.innerHTML = it.length ? `<table class="tbl"><thead><tr>
+            <th>произошло</th><th>что именно</th><th>класс</th><th>предсказано</th></tr></thead><tbody>
+          ${it.slice(0, 60).map(x => `<tr data-pid="${x.prediction_id || ""}" data-fpid="${x.прогноз_prediction_id || ""}"
+              style="cursor:pointer">
+            <td class="num">${esc(x.произошло)}${x.свежее ? ' <span class="badge high">24 ч</span>' : ""}
+              <div class="faint" style="font-size:10px">${esc(x.событий_в_бакете || 0)} соб.</div></td>
+            <td><b>${esc(x.тип_датчика || "—")}</b>${x.название_датчика ? ` · ${esc(x.название_датчика)}` : ""}
+              <div class="faint" style="font-size:10.5px">объект ${esc(x.object_id)}${x.object_name ? " · " + esc(x.object_name) : ""}
+              ${x.похоже_на_ППР ? ' · <span class="badge faint">ППР</span>' : ""}</div></td>
+            <td>${x.группа_события ? `<span class="badge ${x.класс_события === "авария" ? "high" : "mid"}">${esc(x.группа_события)}</span>` : "—"}</td>
+            <td>${x.предсказано
+              ? `<span class="badge low">${esc(x.прогноз_бакет)}</span>
+                 <div class="faint" style="font-size:10.5px">за ${x.предсказано_за_ч} ч · p24=${x.прогноз_p24}</div>`
+              : '<span class="badge high">пропущено моделью</span>'}</td></tr>`).join("")}
+        </tbody></table>` : UI.emptyState("в текущем круге реплея происшествий пока нет", "activity");
+        body.querySelectorAll("[data-fpid],[data-pid]").forEach(tr => tr.onclick = () => {
+          const pid = +tr.dataset.fpid || +tr.dataset.pid;
+          if (pid) Cards.forecast.open(pid, { onDecided: () => reload() });
+        });
+        note.textContent = d.note || "";
+        const rf = h.querySelector("#fact-rf");
+        if (rf) rf.onclick = reload;
       });
-      note.textContent = d.note || "";
     };
-    card.querySelector("#fact-rf").onclick = load;
-    load();
+    const reload = async () => {
+      const my = ++factGen;
+      if (factCache[task]) paint(factCache[task]);     // сразу показываем прошлые данные
+      const d = await API.get(`/meta/events?task=${task}&n=60`).catch(() => null);
+      if (my !== factGen) return;                      // ответ устаревшего запроса не рисуем
+      if (!d || !d.summary) return;                    // ошибка сети — оставляем прежнюю картину
+      factCache[task] = d;
+      paint(d);
+    };
+    card.querySelector("#fact-rf").onclick = reload;
+    reload();
     return card;
   }
 

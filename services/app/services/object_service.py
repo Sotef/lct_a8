@@ -249,7 +249,8 @@ def security_route(db: Session, object_id: str, hours: int = 72,
 def events_vs_forecast(db: Session, task: str, object_id: str | None = None,
                        channel_id: str | None = None, n: int = 60,
                        threshold: float | None = None, alert_q: float | None = None,
-                       lookback: int = 4, campaign_min: int = 15) -> dict:
+                       lookback: int = 4, campaign_min: int = 15,
+                       recent_h: int = 24) -> dict:
     """Реальные происшествия (из журнала) против прогнозов, которые их предсказывали.
 
     Факт — строка прогноза с `event_flag = 1` (в этом 6ч-бакете по каналу было
@@ -275,6 +276,13 @@ def events_vs_forecast(db: Session, task: str, object_id: str | None = None,
          .outerjoin(dbm.ObjectRef, dbm.ObjectRef.object_id == dbm.Prediction.object_id)
          .filter(dbm.Prediction.task == task, dbm.current_only(),
                  dbm.Prediction.bucket_ts.isnot(None)))
+    # «сим-сейчас»: без этого в панель могли попасть бакеты прошлого круга реплея
+    # (в БД остаются закреплённые прогнозы) — тогда окно «свежих» 24 ч считалось бы от
+    # будущей даты. Другие «актуальные» ручки (топ-риски, план ТО) делают так же.
+    from . import prediction_service as _ps
+    _last = _ps.latest_bucket_ts(db, task)
+    if _last is not None:
+        q = q.filter(dbm.Prediction.bucket_ts <= _last)
     if object_id:
         q = q.filter(dbm.Prediction.object_id == object_id)
     if channel_id:
@@ -303,6 +311,9 @@ def events_vs_forecast(db: Session, task: str, object_id: str | None = None,
     for c, (p, st, sn, obj_name) in zip(facts_cnt, rows):
         per_chan[p.channel_id].append((p, st, sn, obj_name, c))
 
+    # «свежее» — происшествие за последние `recent_h` часов сим-времени (по последнему бакету)
+    _last_ts = max((p.bucket_ts for p, *_ in rows if p.bucket_ts is not None), default=None)
+    _cutoff = _last_ts - dt.timedelta(hours=max(1, int(recent_h))) if _last_ts else None
     items, leads = [], []
     events_total = planned_total = predicted_total = missed = alerts = hits = 0
     for seq in per_chan.values():
@@ -360,9 +371,18 @@ def events_vs_forecast(db: Session, task: str, object_id: str | None = None,
                 "похоже_на_ППР": bool(camp[i]),
                 "событий_в_бакете": int(c),
                 "вид_факта": FACT_KIND_RU.get(task, "событие"),
+                # свежесть: показывается постоянно в панели, не «пропадает» между тиками
+                "свежее": bool(_cutoff is not None and p.bucket_ts is not None
+                               and p.bucket_ts >= _cutoff),
             })
     items.sort(key=lambda x: x["bucket_ts"], reverse=True)
     leads.sort()
+    # недавние (за `recent_h` ч) отдаём ВСЕГДА (не «пропадают»), старой историей добираем до n;
+    # размер ответа ограничен, чтобы сотни свежих фактов не раздували payload
+    _n = max(1, int(n))
+    _recent = [x for x in items if x["свежее"]][:max(_n, 200)]
+    _rest = [x for x in items if not x["свежее"]]
+    _out = _recent + _rest[:max(0, _n - len(_recent))]
     return {
         "task": task,
         "task_desc": task_cfg.TASKS[task]["desc"],
@@ -374,6 +394,7 @@ def events_vs_forecast(db: Session, task: str, object_id: str | None = None,
         "auto_threshold": auto_thr,
         "horizon_h": lookback * BUCKET_H,
         "campaign_min": int(campaign_min),
+        "recent_h": max(1, int(recent_h)),
         "summary": {
             "events": events_total,
             "planned_ppr": planned_total,
@@ -381,11 +402,12 @@ def events_vs_forecast(db: Session, task: str, object_id: str | None = None,
             "missed": missed,
             "alerts": alerts,
             "hits": hits,
+            "recent": len(_recent),
             "precision": round(hits / alerts, 3) if alerts else None,
             "recall": round(predicted_total / events_total, 3) if events_total else None,
             "median_lead_h": leads[len(leads) // 2] if leads else None,
         },
-        "items": items[:n],
+        "items": _out,
         "note": ("факты — тревожные сообщения/неисправности журнала СМВУ в 6ч-бакете канала; "
                  "«предсказано» — модель давала P(событие ≤ 24 ч) не ниже порога в одном из "
                  "предыдущих бакетов того же канала. Порог = квантиль alert_q распределения p24 "

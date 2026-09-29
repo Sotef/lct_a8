@@ -20,6 +20,7 @@ from .. import config
 from .. import models_db as dbm
 from ..adapters.journal import bucket_to_timestamp
 from . import feature_pipeline as fp
+from . import incident_log
 from . import inference as inf
 from . import ml_registry
 from .alarm_service import alarm_class as _alarm_class
@@ -162,10 +163,17 @@ def compute_and_store_bucket(task: str, bucket: int, db: Session,
         ))
     db.add_all(rows)
     db.commit()
+    # происшествия бакета — в системный лог и аудит (вкладка «Система»); дедуп по канал×бакет
+    try:
+        n_inc = incident_log.log_bucket(db, task, bucket, rows)
+    except Exception:  # noqa: BLE001
+        log.exception("не удалось залогировать происшествия бакета %s", bucket)
+        n_inc = 0
     return {"task": task, "bucket": bucket,
             "bucket_ts": str(_bucket_ts(bucket)),
             "n_subjects": int(len(bucket_rows)),
-            "n_stored": len(rows)}
+            "n_stored": len(rows),
+            "n_incidents_logged": n_inc}
 
 
 def compute_factors_for_prediction(db: Session, pred: dbm.Prediction,
