@@ -30,7 +30,7 @@ docker compose up -d --build
 |---|---|
 | SPA (диспетчер/техник) | http://127.0.0.1:8000/ |
 | Swagger | http://127.0.0.1:8000/docs |
-| HTTPS (профиль `tls`, TLS 1.2+) | https://127.0.0.1:8443/ |
+| HTTPS (профиль `tls`, TLS 1.2+) | https://127.0.0.1:8443/ — сначала сертификаты: `.\.venv\Scripts\python.exe scripts\make_dev_certs.py` (либо положить корпоративные `tls.crt`/`tls.key` в `deploy/certs`, см. `deploy/certs/README.md`) |
 
 Вход: `central.operator` / `central123` (центральный диспетчер),
 `dispatcher.alpha` / `alpha123`, `tech.alpha` / `tech123`.
@@ -645,7 +645,7 @@ docker compose exec -T api python scripts/verify_deploy.py
 ### TLS 1.2+ (профиль `tls`)
 
 ```bash
-# сертификат: положите tls.crt/tls.key в services/deploy/certs (см. README там же)
+# сертификат: .\.venv\Scripts\python.exe scripts\make_dev_certs.py  (или свои tls.crt/tls.key в deploy/certs)
 docker compose --profile tls up -d --build
 # https://127.0.0.1:8443/   (HTTP :8080 -> 301 на HTTPS)
 ```

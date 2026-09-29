@@ -9,6 +9,21 @@ deploy/certs/tls.key   # приватный ключ (без пароля)
 
 Каталог монтируется в контейнер `proxy` как `/etc/nginx/certs` (read-only).
 
+## Вариант 0. Одной командой (самоподписанный, для демо/теста)
+
+```powershell
+cd services
+.\.venv\Scripts\python.exe scripts\make_dev_certs.py     # создаст tls.crt + tls.key на 365 дней
+docker compose --profile tls up -d
+# https://127.0.0.1:8443/  (браузер покажет предупреждение о самоподписанном сертификате)
+```
+
+Скрипту нужен только пакет `cryptography` (приходит с `python-jose[cryptography]`), `openssl` не требуется.
+Существующие сертификаты не перезаписываются (`--force`), срок — `--days`, каталог — `--out`.
+
+> Важно: **без** сертификатов контейнер `proxy` уходит в рестарт-луп
+> (`nginx: cannot load certificate "/etc/nginx/certs/tls.crt"`), а API по HTTP продолжает работать.
+
 ## Вариант 1. Корпоративный сертификат
 Скопируйте выданные файлы сюда под именами `tls.crt` / `tls.key`.
 

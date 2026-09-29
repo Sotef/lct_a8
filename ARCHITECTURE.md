@@ -181,6 +181,7 @@ cd services
 cp .env.docker.example .env          # Windows: copy .env.docker.example .env
 docker compose up -d --build         # первая сборка 2–3 минуты
 # SPA http://127.0.0.1:8000/  ·  Swagger /docs  ·  HTTPS (профиль tls) https://127.0.0.1:8443/
+# Профиль tls требует сертификаты: python scripts/make_dev_certs.py (см. deploy/certs/README.md)
 docker compose exec -T api python scripts/verify_deploy.py   # проверка API по ролям + PWA-раздачи
 ```
 
