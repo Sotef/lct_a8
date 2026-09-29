@@ -55,8 +55,8 @@ docker compose up -d --build
 
 | Что проверяем | Как |
 |---|---|
-| Вёрстка и сценарии на реальном телефоне | `ipconfig` → на телефоне в той же сети открыть `http://<IP>:8000`; при необходимости разрешить порт: `netsh advfirewall firewall add rule name="LCT 8000" dir=in action=allow protocol=TCP localport=8000` |
-| Установка PWA, офлайн-очередь, Web Push | нужен *secure context*: `http://127.0.0.1:8000` + DevTools device mode (localhost безопасен) **или** `https://<IP>:8443` с **доверенным** сертификатом |
+| Вёрстка и сценарии на реальном телефоне | `ipconfig` → взять IPv4 физической сети (`192.168.x.x`, не WSL/VPN-адаптера) → на телефоне в той же сети открыть `http://<IP>:8000`. Docker публикует порт сам и добавляет inbound-правило; если не открывается — `netsh advfirewall firewall add rule name="LCT 8000" dir=in action=allow protocol=TCP localport=8000` (от админа) |
+| Установка PWA, офлайн-очередь, Web Push | нужен *secure context*: `http://127.0.0.1:8000` + DevTools device mode, **или** `https://<IP>:8443` — но сертификат должен содержать LAN-адрес: `docker compose exec -T api python scripts/make_dev_certs.py --force` (SAN собирается автоматически, включая `192.168.x.x`) → `docker compose --profile tls up -d`, при необходимости `docker compose restart proxy`. Либо быстрый тестовый путь: Chrome на Android → `chrome://flags/#unsafely-treat-insecure-origin-as-secure` → `http://<IP>:8000` |
 | Автотест мобильного профиля | `docker compose cp app/web/__mprobe.html api:/workspace/services/app/web/__mprobe.html` → открыть `http://127.0.0.1:8000/__mprobe.html?stub=1` (отчёт `MPROBE OK`) |
 | Приёмка по экранам (26 пунктов) | `MOBILE_PLAN.md` → Приложение C |
 

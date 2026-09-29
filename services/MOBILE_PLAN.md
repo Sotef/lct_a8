@@ -672,8 +672,19 @@ docker compose exec -T api python scripts/verify_deploy.py    # проверка
 3. Полный PWA-сценарий (установка, офлайн-очередь, Web Push) требует *secure context*:
    - **на компьютере** — `http://127.0.0.1:8000` + DevTools device mode (localhost безопасен,
      офлайн проверяется в DevTools → Application → Service Workers);
-   - **на телефоне** — `docker compose --profile tls up -d --build` и `https://<IP>:8443`
-     с **доверенным** сертификатом (самоподписанный Chrome не примет для service worker).
+   - **на телефоне** — `https://<IP>:8443` с сертификатом, в котором есть LAN-адрес:
+     1) `docker compose exec -T api python scripts/make_dev_certs.py --force`
+        (SAN скрипт собирает сам: `localhost`, `127.0.0.1` и все LAN-адреса хоста; свои —
+        `--host 192.168.1.50`, отключить авто-LAN — `--no-lan`);
+     2) `docker compose --profile tls up -d` (порядок важен: сначала сертификат, иначе `proxy`
+        уходит в рестарт-луп; если уже упал — `docker compose restart proxy`);
+     3) на телефоне принять предупреждение о самоподписанном сертификате («Дополнительно» →
+        «Перейти»), либо установить `services/deploy/certs/tls.crt` как доверенный
+        (Android: настройки → безопасность → «Установить сертификат» → «Сертификат ЦС»;
+        iOS: профиль → «Доверять») — тогда предупреждения не будет.
+   - быстрый тестовый путь без сертификата: Chrome на Android →
+     `chrome://flags/#unsafely-treat-insecure-origin-as-secure` → добавить `http://<IP>:8000`
+     → перезапустить браузер (SW/PWA/push заработают по HTTP).
 4. По `http://<IP>` браузер считает origin небезопасным → SW/PWA/офлайн/push не включатся
    (вёрстка и обычные запросы работают).
 5. Приёмка по экранам — **Приложение C** (26 пунктов).
