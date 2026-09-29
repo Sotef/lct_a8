@@ -20,7 +20,7 @@ copy .env.docker.example .env        # bash: cp .env.docker.example .env
 docker compose up -d --build
 ```
 
-`.env.docker.example` уже содержит `DEMO_DATA_HF=sotef/moscollector-2026-demo-data`, поэтому
+`.env.docker.example` уже содержит `DEMO_DATA_HF=sotef/lct`, поэтому
 панели 6ч (и прочие артефакты демо) контейнер дотянет сам при старте, если их нет локально
 (подробнее — «Демо-данные 2026» ниже). Отключить: `SKIP_DEMO_FETCH=1`.
 

@@ -84,7 +84,7 @@ x-api-env: &api-env
   RUN_MIGRATIONS: ${RUN_MIGRATIONS:-0}
   DB_WAIT_RETRIES: ${DB_WAIT_RETRIES:-45}
   # --- Демо-данные 2026: авто-подтяг на старте (панели 6ч ~319 МБ) ---
-  # DEMO_DATA_HF=sotef/moscollector-2026-demo-data — скачивание с Hugging Face без токена
+  # DEMO_DATA_HF=sotef/lct — скачивание с Hugging Face без токена
   # (или DEMO_DATA_URL=<URL demo-data-2026.zip>, например GitHub Release asset)
   DEMO_DATA_HF: ${DEMO_DATA_HF:-}
   DEMO_DATA_URL: ${DEMO_DATA_URL:-}

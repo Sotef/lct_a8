@@ -250,7 +250,7 @@ docker compose up -d --build
 ```
 
 > Панели 6ч можно вообще не качать руками: в `services/.env` уже задан
-> `DEMO_DATA_HF=sotef/moscollector-2026-demo-data`, и контейнер при старте сам подтянет
+> `DEMO_DATA_HF=sotef/lct`, и контейнер при старте сам подтянет
 > недостающее с Hugging Face в `services/data/` (см. `services/README.md` → «Демо-данные 2026»).
 > Не нужно — `SKIP_DEMO_FETCH=1`.
 
