@@ -236,11 +236,18 @@ exp_days = Σ S(t) / 4        E[время до события] в днях (RMS
 Python, venv, PostgreSQL и модели ставить не требуется — они уже в репозитории.
 
 ```powershell
+git lfs install                      # один раз: панели 6ч (~319 МБ) хранятся в Git LFS
 git clone https://github.com/Sotef/lct_a8.git
-cd lct_a8/services
+cd lct_a8; git lfs pull              # подтянуть демо-данные 2026 (или: python services/scripts/fetch_demo_data.py)
+cd services
 copy .env.docker.example .env        # bash: cp .env.docker.example .env
 docker compose up -d --build
 ```
+
+> Демо-данные 2026 (панели 6ч, raw-бакеты, модели, справочники) — в репозитории: мелкое —
+> обычными файлами, **6ч-панели — через Git LFS** (файл `sensor` >100 МБ GitHub иначе не примет).
+> Проверка/получение: `services/scripts/fetch_demo_data.py` (`--check`, `--url <архив релиза>`, `--pack`).
+> Если LFS недоступен — панель пересоберётся из `raw/buckets_2026.parquet` при первом запуске.
 
 Через 2–3 минуты после первой сборки:
 

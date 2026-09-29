@@ -238,6 +238,8 @@ severity — `inference_contract.SEVERITY_BY_TYPE`, scale — по числу а
 - drift-мониторинг — ежеквартально (/admin/drift) + накопление процентилей p24/risk30.
 
 ## 10. Порядок развёртывания (чек-лист backend)
+0. Получить демо-данные 2026: `git lfs install && git lfs pull` (6ч-панели — Git LFS),
+   либо `python services/scripts/fetch_demo_data.py` (`--check` / `--url <архив релиза>` / `--pack`);
 1. Установить `services/.venv` (requirements.txt), `PostgreSQL 12+`, `alembic upgrade head`;
 2. Скопировать/симлинк `research/models` и `research/inference_contract.py`
    (или `sys.path` на research) — пути из `models_registry`/`.env`;

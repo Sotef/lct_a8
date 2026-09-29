@@ -113,6 +113,32 @@ ext-journal-<год>.csv ──ленивое чтение порциями (SIM
 > (в git его нет — ~16 ГБ всех лет). В Docker он приходит из read-only тома
 > `../research:/workspace/research`.
 
+## Демо-данные 2026 (Git LFS / GitHub)
+
+Для демо-прогона (реплей 2026) нужны артефакты 2026 года. Модели, `raw/buckets_2026.parquet`,
+z-статистики, коды категорий, схема признаков и справочники — **обычными файлами в git**;
+**6ч-панели (~319 МБ; `sensor` 160 МБ > лимита GitHub 100 МБ) — в Git LFS** (`.gitattributes`).
+
+```powershell
+git lfs install                     # один раз на машину
+git clone https://github.com/Sotef/lct_a8.git
+cd lct_a8; git lfs pull             # подтянуть панели 6ч (~319 МБ)
+```
+
+Проверить и получить данные скриптом (из `services/`):
+
+```powershell
+.\.venv\Scripts\python.exe scripts\fetch_demo_data.py --check   # что есть / чего не хватает
+.\.venv\Scripts\python.exe scripts\fetch_demo_data.py           # добрать недостающее (git lfs pull)
+.\.venv\Scripts\python.exe scripts\fetch_demo_data.py --url <URL demo-data-2026.zip>   # из GitHub Release (asset)
+.\.venv\Scripts\python.exe scripts\fetch_demo_data.py --pack    # собрать архив для публикации
+```
+
+Если LFS недоступен — сервис соберёт панель из `services/data/raw/buckets_2026.parquet`
+при первом запуске (дольше): `scripts/run_demo.py --recompute-panel` или просто запуск.
+Docker использует те же данные через volume `./data:/workspace/services/data` (панели берутся
+из рабочей копии репозитория, в образ не копируются).
+
 ## Поток данных
 
 ```
