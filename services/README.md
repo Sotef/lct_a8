@@ -472,11 +472,15 @@ top-risks с полями объекта, карточка с S(t)/factors, grap
 # 2) Полный прогон: API-набор + интерфейс в headless (жмёт кнопки и печатает,
 #    что изменилось и за сколько мс) → сводный отчёт services/data/e2e_report.md
 powershell -File tests\run_buttons_e2e.ps1                       # текущий стек :8000
+powershell -File tests\run_buttons_e2e.ps1 -Fast                 # + быстрый режим часов (4×, без SHAP) — прогон заметно короче
 powershell -File tests\run_buttons_e2e.ps1 -User dispatcher.alpha
 powershell -File tests\run_buttons_e2e.ps1 -Mobile -Window 420,900   # мобильный профиль
 powershell -File tests\run_buttons_e2e.ps1 -Base http://127.0.0.1:8040 -Reset -Project e2e
 #   -Reset  — дополнительно проверяет деструктивную кнопку «Заново с января» и то,
-#             что «Тренд риска» наполняется после сброса (ожидание в реальном времени)
+#             что «Тренд риска» наполняется после сброса: ожидание идёт по продвижению
+#             сим-часов (тик с SHAP длится минуты, поэтому «секундный» таймаут давал
+#             ложную тревогу), в отчёте печатается длительность тика и число тиков
+#   -Fast   — перед прогоном включает скорость 4× и расчёт без SHAP (быстрее в разы)
 #   -Project — имя docker-compose проекта: драйвер __e2e.html копируется внутрь контейнера
 ```
 

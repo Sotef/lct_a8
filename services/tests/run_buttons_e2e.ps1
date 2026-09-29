@@ -22,7 +22,8 @@ param(
   [string]$Project = "",                 # docker-compose проект (чтобы скопировать __e2e.html в контейнер)
   [string]$Window = "1280,900",          # размер окна headless (мобильный профиль: -Window 420,900)
   [int]$TrendWaitSec = 200,              # ожидание наполнения тренда после сброса (реальное время)
-  [int]$TimeoutSec = 600                 # жёсткий таймаут браузера (на случай «залипания» страницы)
+  [int]$TimeoutSec = 600,                # жёсткий таймаут браузера (на случай «залипания» страницы)
+  [switch]$Fast                          # перед прогоном включить быстрый расчёт (4×, без SHAP)
 )
 # docker/браузер пишут служебные сообщения в stderr — не превращаем их в исключения
 $ErrorActionPreference = "Continue"
@@ -67,6 +68,18 @@ else {
     if ([int]$inside -ne [int]$local) { throw "драйвер не скопировался в контейнер" }
   }
   $q = "user=$User" + $(if ($Reset) { "&reset=1" }) + $(if ($Mobile) { "&mobile=1" })
+  if ($Fast) {
+    $pwdF = if ($User -like "central*") { "central123" }
+            elseif ($User -like "dispatcher*") { "alpha123" } else { "tech123" }
+    $lb = @{ username = $User; password = $pwdF } | ConvertTo-Json
+    $tk = (Invoke-RestMethod -Method Post -Uri "$Base/api/v1/auth/login" -ContentType 'application/json' -Body $lb).access_token
+    $hh = @{ Authorization = "Bearer $tk" }
+    try {
+      $null = Invoke-RestMethod -Method Post -Uri "$Base/api/v1/admin/clock/speed" -Headers $hh `
+              -ContentType 'application/json' -Body '{"level":4,"fast":true}'
+      Say "  быстрый режим включён (4×, без SHAP-факторов)"
+    } catch { Say "  быстрый режим включить не удалось: $($_.Exception.Message)" }
+  }
   $url = "$Base/__e2e.html?$q"
   $tmp = Join-Path $env:TEMP ("e2e_" + [guid]::NewGuid().ToString("N") + ".html")
   Say "  открываю $url (таймаут $TimeoutSec с)"
@@ -96,25 +109,34 @@ else {
 $trendLine = ""
 if ($Reset) {
   Say ""
-  Say "== 3/3 ПОСЛЕ СБРОСА: наполнение «Тренда риска» (до $TrendWaitSec с) =="
+  Say "== 3/3 ПОСЛЕ СБРОСА: наполнение «Тренда риска» (ждём 2 тика сим-часов, максимум $TrendWaitSec с) =="
   $pwd = if ($User -like "central*") { "central123" }
          elseif ($User -like "dispatcher*") { "alpha123" } else { "tech123" }
   $apiB = "$Base/api/v1"
   $loginBody = @{ username = $User; password = $pwd } | ConvertTo-Json
   $tok = (Invoke-RestMethod -Method Post -Uri "$apiB/auth/login" -ContentType 'application/json' -Body $loginBody).access_token
   $h = @{ Authorization = "Bearer $tok" }
+  # состояние часов сразу после сброса: тик может длиться минуты (с SHAP), поэтому ждём
+  # не по секундам, а по продвижению сим-времени — иначе проверка даёт ложную тревогу
+  $c0 = Invoke-RestMethod -Uri "$apiB/meta/clock" -Headers $h
+  $b0 = [int]$c0.bucket
+  Say ("  после сброса: сим-время {0} · интервал тика {1} с · последний тик {2} с · быстрый режим: {3}" -f `
+       $c0.sim_now, $c0.tick_sec, $c0.last_tick_sec, $c0.fast)
   $sw = [Diagnostics.Stopwatch]::StartNew()
-  $pts = 0
+  $pts = 0; $adv = 0; $note = ""
   while ($sw.Elapsed.TotalSeconds -lt $TrendWaitSec) {
     try {
+      $c = Invoke-RestMethod -Uri "$apiB/meta/clock" -Headers $h
+      $adv = [int]$c.bucket - $b0
       $rh = Invoke-RestMethod -Uri "$apiB/meta/risk-history?task=wear&n=120&measure=risk30" -Headers $h
       $pts = @($rh.rows).Count
+      $note = "сим-время {0}, тиков после сброса: {1}, последний тик {2} с" -f $c.sim_now, $adv, $c.last_tick_sec
     } catch { $pts = -1 }
-    if ($pts -ge 2) { break }
+    if ($pts -ge 2 -and $adv -ge 1) { break }
     Start-Sleep -Seconds 5
   }
   $sw.Stop()
-  $trendLine = "точек тренда после сброса: $pts за $([int]$sw.Elapsed.TotalSeconds) с (нужно ≥ 2)"
+  $trendLine = "точек тренда после сброса: $pts за $([int]$sw.Elapsed.TotalSeconds) с · $note (нужно ≥ 2 точки)"
   Say ("  " + $trendLine)
 }
 
