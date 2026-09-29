@@ -14,6 +14,7 @@ from .. import task_cfg
 from ..database import get_db
 from ..deps import require_roles
 from ..services import prediction_service as ps
+from ..services import object_service
 
 router = APIRouter(tags=["meta"])
 
@@ -134,6 +135,46 @@ def _history_p7d(db: Session, task: str, n: int, lo=None, hi=None) -> dict:
             "avg_risk": round(float(r[1]), 4), "max_risk": round(float(r[2]), 4),
             "n": int(r[3])} for r in rows[-n:]]
     return {"task": task, "measure": "p7d", "measure_ru": MEASURES["p7d"], "rows": out}
+
+
+@router.get("/meta/events")
+def events_vs_forecast(task: str = Query(...), n: int = Query(60, ge=1, le=500),
+                       object_id: str | None = Query(None),
+                       channel_id: str | None = Query(None),
+                       threshold: float | None = Query(None, ge=0.0, le=1.0,
+                                                       description="явный порог p24; пусто = квантиль alert_q"),
+                       alert_q: float | None = Query(None, ge=0.5, le=0.9999),
+                       lookback: int = Query(4, ge=1, le=20),
+                       campaign_min: int = Query(15, ge=2, le=500),
+                       db: Session = Depends(get_db),
+                       user: dbm.User = Depends(
+                           require_roles("dispatcher", "central", "tech"))):
+    """Реальные происшествия (журнал СМВУ) против прогнозов: что произошло и когда это
+    предсказали. `event_flag = 1` — в 6ч-бакете канала зафиксировано событие; «предсказано» —
+    модель давала P(событие ≤ 24 ч) ≥ порога в одном из предыдущих бакетов того же канала.
+    """
+    from ..deps import scoped_object_ids
+    if task not in task_cfg.ALL_TASKS:
+        raise HTTPException(status_code=400, detail="неизвестная задача")
+    allowed = scoped_object_ids(user, db)
+    if allowed is not None:
+        if object_id and object_id not in allowed:
+            raise HTTPException(status_code=403, detail="объект вне вашего района")
+        if not object_id:
+            # техник видит только свой район: фильтруем по списку объектов после расчёта
+            res = object_service.events_vs_forecast(db, task, object_id=None,
+                                                    channel_id=channel_id, n=n,
+                                                    threshold=threshold, alert_q=alert_q,
+                                                    lookback=lookback,
+                                                    campaign_min=campaign_min)
+            keep = set(allowed)
+            res["items"] = [i for i in res["items"] if str(i.get("object_id")) in keep]
+            return res
+    return object_service.events_vs_forecast(db, task, object_id=object_id,
+                                             channel_id=channel_id, n=n,
+                                             threshold=threshold, alert_q=alert_q,
+                                             lookback=lookback,
+                                             campaign_min=campaign_min)
 
 
 @router.get("/meta/channel-history")

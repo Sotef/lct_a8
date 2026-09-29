@@ -89,6 +89,49 @@ def factors(prediction_id: int, compute: bool = Query(False, description="пос
             "computed": bool(fac)}
 
 
+@router.get("/{prediction_id}/facts")
+def forecast_facts(prediction_id: int, lookback: int = Query(4, ge=1, le=20),
+                   n: int = Query(8, ge=1, le=50),
+                   threshold: float | None = Query(None, ge=0.0, le=1.0),
+                   alert_q: float | None = Query(None, ge=0.5, le=0.9999),
+                   db: Session = Depends(get_db),
+                   user: dbm.User = Depends(
+                       require_roles("dispatcher", "central", "tech"))):
+    """«Предсказано / произошло» по каналу прогноза.
+
+    Факты — реальные происшествия из журнала СМВУ (`event_flag = 1` в 6ч-бакете канала);
+    для каждого факта указано, когда и с какой вероятностью его предсказали (или что пропустили).
+    Плюс — что модель ожидает от текущего прогноза: окно `horizon_h` от бакета прогноза.
+    """
+    import datetime as _dt
+
+    from ..services import object_service
+    p = _get_pred(db, prediction_id)
+    _check_scope(user, db, p)
+    data = object_service.events_vs_forecast(db, p.task, channel_id=p.channel_id, n=n,
+                                             lookback=lookback, threshold=threshold,
+                                             alert_q=alert_q)
+    p24 = object_service._p24(p)
+    thr = data["threshold"]
+    issued = p.bucket_ts
+    return {
+        "prediction_id": p.id,
+        "task": p.task,
+        "channel_id": p.channel_id,
+        "выдано": issued.strftime("%d.%m %H:%M") if issued else None,
+        "p24": round(p24, 4) if p24 is not None else None,
+        "risk30": p.risk30,
+        "ожидается_событие": bool(p24 is not None and p24 >= thr),
+        "окно_до": (issued + _dt.timedelta(hours=data["horizon_h"])).strftime("%d.%m %H:%M")
+                   if issued else None,
+        "событие_в_этом_бакете": bool(p.event_flag == 1),
+        "threshold": thr,
+        "summary": data["summary"],
+        "items": data["items"][:n],
+        "note": data["note"],
+    }
+
+
 @router.post("/{prediction_id}/decision")
 def decide(prediction_id: int, req: schemas.DecisionRequest,
            db: Session = Depends(get_db),

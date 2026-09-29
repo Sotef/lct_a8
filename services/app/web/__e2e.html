@@ -288,6 +288,89 @@ window.addEventListener("load", async () => {
       return `вариантов: ${opts.length} (${opts.slice(0, 3).join(", ")}…) · действие: ${sent ? "ok" : "нет"} ${toast}`;
     }, () => true);
 
+    /* 3c. Реальные происшествия против прогнозов (панель пульта + карточки) ------------- */
+    await step("Пульт: панель «Реальные происшествия и прогнозы»", async () => {
+      /* выбираем направление, по которому в текущем круге уже есть происшествия */
+      let pick = null, best = 0;
+      for (const t of ["fire", "access", "sensor", "wear"]) {
+        const d = await API.get(`/meta/events?task=${t}&n=5`).catch(() => null);
+        const n = d && d.items ? d.items.length : 0;
+        if (n > best) { best = n; pick = t; }
+      }
+      if (pick) { App.state.task = pick; await App.navigate("dashboard"); }
+      else { await App.navigate("dashboard"); }
+      const got = await wait(() => q("#factcard") && q("#fact-body"), 15000);
+      if (!got) return "карточка не появилась";
+      await wait(() => ((q("#fact-sum") || {}).textContent || "").includes("событий"), 15000);
+      const sum = ((q("#fact-sum") || {}).textContent || "").replace(/\s+/g, " ").trim().slice(0, 130);
+      const rows = qa("#fact-body tbody tr");
+      const first = rows.length ? (rows[0].textContent || "").replace(/\s+/g, " ").trim().slice(0, 90) : "";
+      const thr = ((q("#fact-thr") || {}).textContent || "").trim();
+      return `направление ${App.state.task}: сводка [${sum}] · порог: ${thr} · строк: ${rows.length}`
+        + (first ? ` · пример: ${first}` : "");
+    }, () => !!q("#factcard") && !!q("#fact-body"));
+
+    await step("Событие ↔ прогноз: клик по факту открывает предсказавший прогноз", async () => {
+      const row = qa("#fact-body tbody tr").find(tr => +tr.dataset.fpid) || qa("#fact-body tbody tr")[0];
+      if (!row) return "в списке фактов нет строк";
+      click(row);
+      const ok = await wait(() => q(".drawer .dbody .hero"), 12000);
+      const title = ((q(".drawer .dsec") || {}).textContent || "").replace(/\s+/g, " ").trim().slice(0, 60);
+      return ok ? `карточка открыта · ${title}` : "карточка не открылась";
+    }, () => true);
+
+    await step("Карточка прогноза: блок «Предсказано / произошло»", async () => {
+      const got = await wait(() => [...qa(".drawer .dsec h4")]
+        .some(h => /Предсказано \/ произошло/.test(h.textContent || "")), 12000);
+      const sec = [...qa(".drawer .dsec")]
+        .find(s => /Предсказано \/ произошло/.test(s.textContent || ""));
+      const txt = sec ? (sec.textContent || "").replace(/\s+/g, " ").trim().slice(0, 140) : "";
+      Overlay.closeDrawer();
+      return got ? `блок есть: ${txt}` : "блока нет";
+    }, () => true);
+
+    await step("Карточка объекта: блок маршрута нарушителя виден всегда", async () => {
+      /* объект берём любой: сначала с прогнозами доступа, иначе — первый из справочника */
+      let oid = null;
+      for (const t of ["access", "wear", "fire", "sensor"]) {
+        const tr = await API.get(`/top-risks?task=${t}&k=5&horizon=30d`).catch(() => null);
+        if (tr && tr.items && tr.items.length) { oid = tr.items[0].object_id; break; }
+      }
+      if (!oid) {
+        const objs = await API.get("/objects").catch(() => null);
+        const nodes = (objs && (objs.tree || objs.nodes)) || [];
+        const leaf = nodes.find(n => n.hierarchy_level >= 2) || nodes[0];
+        oid = leaf && leaf.object_id;
+      }
+      if (!oid) return "справочник объектов пуст";
+      Cards.object.open(oid);
+      await wait(() => !!q("#secroute"), 12000);
+      const txt = ((q("#secroute") || {}).textContent || "").replace(/\s+/g, " ").trim().slice(0, 110);
+      return `объект ${oid}: блок ${q("#secroute") ? "есть" : "НЕТ"} · ${txt}`;
+    }, () => !!q("#secroute"));
+
+    await step("Заявка из карточки объекта: без «заявка не найдена»", async () => {
+      /* гарантируем, что у объекта есть заявка: создаём её по прогнозу */
+      const tr = await API.get("/top-risks?task=wear&k=8&horizon=30d").catch(() => null);
+      const it = tr && tr.items && tr.items.length ? tr.items[0] : null;
+      if (!it) return "нет прогнозов по износу — шаг неприменим";
+      await API.post("/maintenance/tickets", { prediction_id: it.id }).catch(() => null);
+      await App.navigate("dashboard"); await sleep(700);      // список заявок не загружен
+      Cards.object.open(it.object_id);
+      await wait(() => q(".drawer .dsec"), 10000);
+      const row = [...qa(".drawer .ritem")].find(n => +n.dataset.tid > 0);
+      if (!row) { Overlay.closeDrawer(); return "у объекта нет заявок — шаг неприменим"; }
+      const tid = +row.dataset.tid;
+      click(row);
+      const opened = await wait(() => /Заявка #/.test((q(".drawer .dx .t, .drawer .dh .t") || {})
+        .textContent || ""), 12000);
+      const toast = ((q(".toast") || {}).textContent || "").trim().slice(0, 60);
+      Overlay.closeDrawer();
+      return `заявка #${tid}: открылась=${opened}`
+        + (toast ? ` · тост: ${toast}` : "") + (/обновите список/i.test(toast) ? " ← БАГ" : "");
+    }, () => true);
+
+
     await step("Алерты: раздел, фильтр направления, «Обновить»", async () => {
       await App.navigate("alerts");
       await wait(() => q("#pagebox .h1"), 9000);

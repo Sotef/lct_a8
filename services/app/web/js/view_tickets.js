@@ -287,8 +287,19 @@ Views.tickets = (() => {
   }
   /* карточка заявки: оценка модели, журнал, допустимые переходы */
   async function openCard(id, state, main) {
-    const t = items.find(x => x.id === id);
-    if (!t) { UI.toast("заявка не найдена — обновите список", "err"); return; }
+    let t = items.find(x => x.id === id);
+    if (!t) {
+      /* карточку можно открыть из другого раздела (объект, прогноз) — список заявок
+         тогда ещё не загружен: подтягиваем заявку по id, а не просим «обновить список» */
+      try {
+        t = await API.get(`/maintenance/tickets/${id}`);
+      } catch (e) {
+        UI.toast(e.message === "заявка не найдена" ? `заявка #${id} не найдена` : e.message, "err");
+        return;
+      }
+      if (t && t.id && !items.some(x => x.id === t.id)) items.push(t);
+    }
+    if (!t || !t.id) { UI.toast(`заявка #${id} недоступна`, "err"); return; }
     const d = Overlay.drawer(`Заявка #${t.id}`);
     d.setTitle(`${ic("wrench")} Заявка #${t.id} · <span class="faint" style="font-size:13px">${esc(t.status_ru)}</span>`);
     d.body.innerHTML = `<div class="rv">

@@ -110,6 +110,31 @@ Cards.forecast = (() => {
       ${c.rbam ? `<div class="note">RBAM: score <b>${fmt(c.rbam.score, 3)}</b> = риск × severity <b>${fmt(c.rbam.severity, 2)}</b>
         × scale <b>${fmt(c.rbam.scale, 2)}</b> · ожидание ≈ ${fmt(expDays, 1)} дн</div>` : ""}</div>`));
 
+    /* предсказано / произошло: факты журнала по этому каналу + ожидание по прогнозу */
+    API.get(`/forecasts/${c.id}/facts?n=6`).then(f => {
+      if (!d.isOpen() || !f || !f.summary) return;
+      const items = f.items || [], s = f.summary;
+      b.appendChild(el(`<div class="dsec rv"><h4>${ic("activity", "s")} Предсказано / произошло</h4>
+        <div class="row wrap" style="gap:8px;margin-bottom:8px">
+          <span class="badge info">прогноз выдан ${esc(f.выдано || "—")} · p24 = ${fmt(f.p24, 4)}</span>
+          <span class="badge ${f.ожидается_событие ? "mid" : "low"}">${f.ожидается_событие
+            ? `модель ожидает событие до ${esc(f.окно_до || "—")}` : "событие в горизонте 24 ч не ожидается"}</span>
+          ${f.событие_в_этом_бакете ? '<span class="badge high">в этом бакете событие уже зафиксировано</span>' : ""}</div>
+        ${items.length ? `<div class="card flat"><table class="tbl"><thead><tr>
+            <th>произошло</th><th>что именно</th><th>предсказано</th></tr></thead><tbody>
+          ${items.map(x => `<tr><td class="num">${esc(x.произошло)}</td>
+            <td>${esc(x.тип_датчика || "—")}${x.похоже_на_ППР ? ' <span class="badge faint">ППР</span>' : ""}</td>
+            <td>${x.предсказано ? `за ${x.предсказано_за_ч} ч · p24=${x.прогноз_p24}
+              <div class="faint" style="font-size:10.5px">прогноз от ${esc(x.прогноз_бакет)}</div>`
+              : '<span class="badge high">пропущено моделью</span>'}</td></tr>`).join("")}
+        </tbody></table></div>` : '<div class="faint">по каналу в текущем круге происшествий не было</div>'}
+        <div class="faint" style="font-size:11px">событий: ${s.events || 0} · предсказано: ${s.predicted || 0}
+          (${s.recall === null || s.recall === undefined ? "—" : Math.round(s.recall * 100) + "%"}) ·
+          попаданий алертов: ${s.hits || 0} из ${s.alerts || 0} ·
+          медианное упреждение: ${s.median_lead_h === null ? "—" : s.median_lead_h + " ч"} ·
+          порог p24 ≥ ${f.threshold}</div></div>`));
+    }).catch(() => {});
+
     const ev = c.last_events || [];
     if (ev.length) b.appendChild(el(`<div class="dsec rv"><h4>${ic("activity", "s")} История прогнозов канала</h4>
       <div class="card flat"><table class="tbl"><thead><tr><th>бакет</th><th>risk30</th><th>p24</th><th>score</th></tr></thead>

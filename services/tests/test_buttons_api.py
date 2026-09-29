@@ -548,6 +548,86 @@ def test_ticket_close_reason_in_history(client):
     assert "disp.t" in (t1["comment"] or "")
 
 
+# === 11. Реальные происшествия (журнал) против прогнозов ==========================
+def test_events_vs_forecast_and_card_facts(client):
+    """Панель «прогноз ↔ факт»: факты — тревожные сообщения журнала, а не ML-метка."""
+    import datetime as _dt
+
+    hc, ht = tok(client, "central.t"), tok(client, "tech.t")
+    db = dbmod.SessionLocal()
+    if db.get(dbm.ChannelRef, "CH11") is None:
+        db.add(dbm.ChannelRef(channel_id="CH11", object_id="OBJ1", sensor_type="КД Люк",
+                              sensor_name="Люк-11", tag="1.2.11"))
+    surv = [0.01, 0.02, 0.03, 0.05, 0.4, 0.5, 0.9]
+    base = dict(task="access", object_id="OBJ1", p72=0.5, p7d=0.6, risk30=0.7, risk30_cal=0.7,
+                exp_days=2.0, severity=0.7, scale=1.0, plan="текущий квартал",
+                surv_points=surv, model_version="test-facts")
+    db.add(dbm.Prediction(channel_id="CH11", bucket_ts=_dt.datetime(2026, 1, 4, 0), p24=0.9,
+                          event_flag=0, obs_days=1.0, score=0.9,
+                          features_json={"тревог": 0, "тревог_дверь": 0, "тревог_движение": 0},
+                          **base))
+    fact = dbm.Prediction(channel_id="CH11", bucket_ts=_dt.datetime(2026, 1, 4, 6), p24=0.9,
+                          event_flag=1, obs_days=0.1, score=0.9,
+                          features_json={"тревог": 3, "тревог_дверь": 0, "тревог_движение": 3},
+                          **base)
+    db.add(fact)
+    db.commit()
+    fact_id = fact.id
+    prev = (db.query(dbm.Prediction)
+            .filter(dbm.Prediction.channel_id == "CH11",
+                    dbm.Prediction.bucket_ts == _dt.datetime(2026, 1, 4, 0)).first())
+    prev_id, prev.p24 = prev.id, 0.55
+    db.commit()
+    db.close()
+
+    d = act("events: факты журнала", lambda: client.get(
+        B + "/meta/events?task=access&n=50&threshold=0.5", headers=hc)).json()
+    assert d["fact_kind"].startswith("тревожное сообщение"), d["fact_kind"]
+    assert d["summary"]["events"] >= 1 and d["summary"]["predicted"] >= 1, d["summary"]
+    it = next(x for x in d["items"] if x["channel_id"] == "CH11")
+    assert it["произошло"].startswith("04.01"), it
+    assert it["событий_в_бакете"] == 3
+    assert it["предсказано"] is True and it["предсказано_за_ч"] == 6
+    assert it["прогноз_p24"] == 0.55 and it["прогноз_бакет"].startswith("04.01 00:00")
+    assert it["prediction_id"] == fact_id and it["прогноз_prediction_id"] == prev_id
+    assert it["группа_события"] == "террор" and it["класс_события"] == "авария"
+
+    # карточка прогноза: «предсказано / произошло» + ожидание события в горизонте
+    f = act("forecasts: facts карточки", lambda: client.get(
+        B + f"/forecasts/{prev_id}/facts?n=5&threshold=0.5", headers=hc)).json()
+    assert f["выдано"] and f["p24"] == 0.55 and f["окно_до"]
+    assert f["ожидается_событие"] is True and f["summary"]["events"] >= 1
+    assert any(x["channel_id"] == "CH11" for x in f["items"])
+
+    # RBAC/валидация
+    assert client.get(B + "/meta/events?task=nope", headers=hc).status_code == 400
+    assert client.get(B + "/meta/events?task=access", headers=ht).status_code == 200
+
+
+def test_ticket_by_id_endpoint(client):
+    """GET /maintenance/tickets/{id}: карточка объекта открывает заявку без загрузки списка."""
+    hd, ht = tok(client, "disp.t"), tok(client, "tech.t")
+    tid = make_open_ticket(client, hd, channel="CH7")
+    r = act("ticket: получить по id", lambda: client.get(
+        B + f"/maintenance/tickets/{tid}", headers=hd))
+    assert r.status_code == 200
+    t = r.json()
+    assert t["id"] == tid and t["channel_id"] == "CH7" and t["status_ru"]
+    assert client.get(B + "/maintenance/tickets/99999999", headers=hd).status_code == 404
+    # техник своего района — можно, чужого — 403
+    assert client.get(B + f"/maintenance/tickets/{tid}", headers=ht).status_code == 200
+    db = dbmod.SessionLocal()
+    other = dbm.MaintenanceTask(task="wear", channel_id="CH9", object_id="OBJ2",
+                                plan_bucket=0, score=0.5, status="suggested",
+                                source="manual", created_at=dt.datetime(2026, 1, 1))
+    db.add(other)
+    db.commit()
+    other_id = other.id
+    db.close()
+    assert client.get(B + f"/maintenance/tickets/{other_id}",
+                      headers=ht).status_code == 403
+
+
 # === 8. Отчёт по времени операций ================================================
 def test_report_timings(client):
     lines = ["| операция | время, мс | ok |", "|---|---|---|"]

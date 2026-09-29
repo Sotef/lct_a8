@@ -18,7 +18,7 @@ Cards.object = (() => {
     /* маршрут движения нарушителя: сработки охранных каналов объекта (ответ заказчика №2) */
     let route = null;
     const oidEnc = encodeURIComponent(objectId);
-    try { route = await API.get(`/objects/${oidEnc}/security-route?hours=72`); }
+    try { route = await API.get(`/objects/${oidEnc}/security-route?hours=168`); }
     catch (e) { route = null; }
     if (!d.isOpen()) return;
 
@@ -58,20 +58,21 @@ Cards.object = (() => {
 
     /* маршрут движения нарушителя (охранные сработки: люк, аварийный выход, дверь, движение, стекло) */
     const rp = (route && route.points) || [];
-    if (rp.length) {
-      b.appendChild(el(`<div class="dsec rv" id="secroute"><h4>${ic("shield", "s")}
-        Маршрут движения нарушителя — охранные сработки (${rp.length})</h4>
-        <div class="card flat" style="padding:10px 14px"><div class="stack">
-          ${rp.slice(0, 40).map((p, i) => `<div class="row" style="gap:10px;align-items:center">
-            <span class="badge">${i + 1}</span>
-            <span class="num faint" style="min-width:74px">${esc(p.время)}</span>
-            <span>${esc(p.тип_датчика || "—")}${p.название_датчика ? ` · ${esc(p.название_датчика)}` : ""}</span>
-            ${p.тег_пикета ? `<span class="faint" style="font-size:11px">пикет ${esc(p.тег_пикета)}</span>` : ""}
-            <span class="grow"></span>
-            <span class="badge high">${esc(p.группа_события || "террор")}</span></div>`).join("")}
-        </div></div>
-        <div class="note">${esc((route && route.note) || "")} · точек: ${rp.length}, бакетов: ${(route && route.buckets) || 0}</div></div>`));
-    }
+    b.appendChild(el(`<div class="dsec rv" id="secroute"><h4>${ic("shield", "s")}
+      Маршрут движения нарушителя — охранные сработки${rp.length ? ` (${rp.length})` : ""}</h4>
+      ${rp.length ? `<div class="card flat" style="padding:10px 14px"><div class="stack">
+        ${rp.slice(0, 40).map((p, i) => `<div class="row" style="gap:10px;align-items:center">
+          <span class="badge">${i + 1}</span>
+          <span class="num faint" style="min-width:74px">${esc(p.время)}</span>
+          <span>${esc(p.тип_датчика || "—")}${p.название_датчика ? ` · ${esc(p.название_датчика)}` : ""}</span>
+          ${p.тег_пикета ? `<span class="faint" style="font-size:11px">пикет ${esc(p.тег_пикета)}</span>` : ""}
+          <span class="grow"></span>
+          <span class="badge high">${esc(p.группа_события || "террор")}</span></div>`).join("")}
+      </div></div>` : `<div class="note">${ic("info", "s")} за 7 дней сим-времени сработок охранных
+        каналов по объекту не зафиксировано — маршрут появится, как только сработают люк,
+        аварийный выход, дверь, датчик движения или стекло</div>`}
+      <div class="note">${esc((route && route.note) || "охранные сработки относятся к авариям «террор, проникновение нарушителя»")}
+        ${rp.length ? ` · точек: ${rp.length}, бакетов: ${(route && route.buckets) || 0}` : ""}</div></div>`));
 
     /* датчики */
     const ch = obj.channels || [];

@@ -152,6 +152,18 @@ def service_now() -> dt.datetime:
     return dt.datetime.utcnow()
 
 
+def ticket_detail(db: Session, t: dbm.MaintenanceTask) -> dict:
+    """Одна заявка в том же формате, что элементы списка (для карточки объекта и мобильного)."""
+    obj = db.get(dbm.ObjectRef, t.object_id)
+    ch = db.get(dbm.ChannelRef, t.channel_id)
+    assignee = None
+    if t.assigned_to:
+        u = db.get(dbm.User, t.assigned_to)
+        assignee = u.username if u else None
+    pred = db.get(dbm.Prediction, t.prediction_id) if t.prediction_id else None
+    return _ticket_out(t, obj, ch, assignee, pred)
+
+
 def _ticket_out(t: dbm.MaintenanceTask, obj=None, ch=None, assignee=None,
                 pred: dbm.Prediction | None = None,
                 now: dt.datetime | None = None) -> dict:

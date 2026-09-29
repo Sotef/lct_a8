@@ -69,6 +69,20 @@ def tickets(task: str | None = Query(None), status: str | None = Query(None),
                            object_ids=scoped_object_ids(user, db))
 
 
+@router.get("/tickets/{ticket_id}")
+def get_ticket(ticket_id: int, db: Session = Depends(get_db),
+               user: dbm.User = Depends(
+                   require_roles("dispatcher", "central", "tech"))):
+    """Одна заявка по id (карточка объекта открывает заявку, даже если список не загружен)."""
+    t = db.get(dbm.MaintenanceTask, ticket_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail="заявка не найдена")
+    allowed = scoped_object_ids(user, db)
+    if allowed is not None and t.object_id not in allowed:
+        raise HTTPException(status_code=403, detail="объект вне вашего района")
+    return ms.ticket_detail(db, t)
+
+
 @router.get("/summary")
 def tickets_summary(db: Session = Depends(get_db),
                     user: dbm.User = Depends(require_roles("dispatcher", "central", "tech"))):

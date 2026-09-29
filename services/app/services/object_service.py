@@ -16,6 +16,65 @@ from sqlalchemy.orm import Session
 from .. import models_db as dbm
 from .. import task_cfg
 from ..research_bridge import module as _m
+from .alarm_service import alarm_class as _alarm_class
+
+BUCKET_H = 6          # шаг прогноза/факта — 6 часов (как в research/features)
+
+# «Факт» = в этом 6ч-бакете журнал зафиксировал тревожные сообщения/неисправности канала.
+# Счётчики берём из features_json (панельные агрегаты журнала), а не из ML-метки event_flag:
+# event_flag отвечает на другой вопрос («есть ли неисправность в бакете» — для износа это 87%
+# бакетов), тогда как диспетчеру нужны именно тревожные сообщения.
+FACT_COUNTERS = {
+    "fire": ("задымлений", "серьёзн_ручной", "тревог_дым", "тревог_тепло", "тревог"),
+    "access": ("тревог_дверь", "тревог_движение", "тревог"),
+    "sensor": ("неисправностей",),
+    "wear": ("неисправностей",),
+}
+FACT_KIND_RU = {
+    "fire": "тревожное сообщение (пожарная система)",
+    "access": "тревожное сообщение (охранная система)",
+    "sensor": "неисправность датчика",
+    "wear": "неисправность оборудования",
+}
+
+# Рабочие точки моделей: доля верхних прогнозов, где precision ≥ 0.7 на holdout
+# (K@prec>=.7(24h) из research/dataset/final_metrics_v0.csv, n_holdout = 19999):
+#   fire 152 → q = 1 − 152/19999 = 0.9924     wear 3035 → q = 1 − 3035/19999 = 0.8482
+#   access/sensor — таких точек нет (модели слабые) → берём консервативные 0.98
+ALERT_Q_BY_TASK = {"fire": 0.9924, "access": 0.98, "sensor": 0.98, "wear": 0.8482}
+DEFAULT_ALERT_Q = 0.95
+
+
+def _fact_count(p, task: str) -> int:
+    """Сколько тревожных сообщений/неисправностей журнал зафиксировал в бакете канала."""
+    fj = p.features_json
+    if isinstance(fj, str):
+        try:
+            import json as _json
+            fj = _json.loads(fj)
+        except (ValueError, TypeError):
+            fj = None
+    if not isinstance(fj, dict):
+        return 0
+    out = 0
+    for k in FACT_COUNTERS.get(task, ("тревог",)):
+        try:
+            out = max(out, int(fj.get(k) or 0))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _p24(p) -> float | None:
+    """P(событие ≤ 24 ч) строки прогноза: колонка p24, иначе 4-я точка S(t)."""
+    if p.p24 is not None:
+        return float(p.p24)
+    sp = p.surv_points or []
+    try:
+        return max(0.0, 1.0 - float(sp[3]))
+    except (TypeError, ValueError, IndexError):
+        return None
+
 
 
 def load_references_into_db(db: Session) -> dict:
@@ -185,6 +244,154 @@ def security_route(db: Session, object_id: str, hours: int = 72,
             "note": ("цепочка сработок охранных каналов (люк, аварийный выход, дверь, движение, "
                      "стекло) по 6ч-бакетам сим-времени: разновидность аварии «террор, "
                      "проникновение нарушителя», диспетчер проводит дополнительную проверку")}
+
+
+def events_vs_forecast(db: Session, task: str, object_id: str | None = None,
+                       channel_id: str | None = None, n: int = 60,
+                       threshold: float | None = None, alert_q: float | None = None,
+                       lookback: int = 4, campaign_min: int = 15) -> dict:
+    """Реальные происшествия (из журнала) против прогнозов, которые их предсказывали.
+
+    Факт — строка прогноза с `event_flag = 1` (в этом 6ч-бакете по каналу было
+    зафиксировано событие: сработка/неисправность — как в журнале СМВУ).
+    «Предсказано» — если в одном из `lookback` предыдущих бакетов того же канала
+    P(событие ≤ 24 ч) была не ниже порога: тогда известны и дата прогноза, и упреждение.
+
+    Возвращает: сводку (событий всего/предсказано/пропущено, алертов, попаданий,
+    precision/recall, медианное упреждение) и список событий «что произошло + когда
+    это предсказали».
+
+    Порог по умолчанию — квантиль `alert_q` распределения p24 по текущему кругу задачи
+    («алерт = попадание в верхние (1 − alert_q) прогнозов»): абсолютные вероятности у задач
+    разные (дым ~1%, износ ~13%), а калибровка отличается от задачи к задаче — единый
+    абсолютный порог был бы нечестным. Бакеты с массовыми сработками (≥ `campaign_min` каналов
+    почти одновременно) помечаются как похожие на ППР/плановую проверку и исключаются из метрик.
+    """
+    from collections import defaultdict
+
+    q = (db.query(dbm.Prediction, dbm.ChannelRef.sensor_type, dbm.ChannelRef.sensor_name,
+                  dbm.ObjectRef.name)
+         .outerjoin(dbm.ChannelRef, dbm.ChannelRef.channel_id == dbm.Prediction.channel_id)
+         .outerjoin(dbm.ObjectRef, dbm.ObjectRef.object_id == dbm.Prediction.object_id)
+         .filter(dbm.Prediction.task == task, dbm.current_only(),
+                 dbm.Prediction.bucket_ts.isnot(None)))
+    if object_id:
+        q = q.filter(dbm.Prediction.object_id == object_id)
+    if channel_id:
+        q = q.filter(dbm.Prediction.channel_id == channel_id)
+    rows = q.order_by(dbm.Prediction.channel_id, dbm.Prediction.bucket_ts.asc()).all()
+
+    facts_cnt = [_fact_count(p, task) for p, *_ in rows]
+    base = (sum(1 for c in facts_cnt if c > 0) / len(facts_cnt)) if facts_cnt else 0.0
+    q = float(alert_q) if alert_q is not None else ALERT_Q_BY_TASK.get(task, DEFAULT_ALERT_Q)
+    p24_sorted = sorted((_p24(p) or 0.0) for p, *_ in rows)
+    if threshold is not None:
+        thr, auto_thr = float(threshold), False
+    elif p24_sorted:
+        idx = max(0, min(len(p24_sorted) - 1, int(round(q * len(p24_sorted))) - 1))
+        thr, auto_thr = round(p24_sorted[idx], 5), True
+    else:
+        thr, auto_thr = 1.0, True
+
+    per_bucket: dict = defaultdict(int)
+    for c, (p, *_) in zip(facts_cnt, rows):
+        if c > 0:
+            per_bucket[p.bucket_ts] += 1
+    campaigns = {b for b, c in per_bucket.items() if c >= max(2, int(campaign_min))}
+
+    per_chan: dict = defaultdict(list)
+    for c, (p, st, sn, obj_name) in zip(facts_cnt, rows):
+        per_chan[p.channel_id].append((p, st, sn, obj_name, c))
+
+    items, leads = [], []
+    events_total = planned_total = predicted_total = missed = alerts = hits = 0
+    for seq in per_chan.values():
+        p24 = [(_p24(x[0]) or 0.0) for x in seq]
+        fact = [x[4] > 0 for x in seq]
+        cnt = [x[4] for x in seq]
+        camp = [seq[j][0].bucket_ts in campaigns for j in range(len(seq))]
+        # алерт = прогноз выше порога вне кампании ППР; попадание — если в следующие
+        # `lookback` бакетов по каналу действительно было событие (иначе ложная тревога)
+        for i in range(len(seq)):
+            if p24[i] >= thr and not camp[i]:
+                alerts += 1
+                if any(fact[j] and not camp[j]
+                       for j in range(i + 1, min(len(seq), i + 1 + lookback))):
+                    hits += 1
+        for i, (p, st, sn, obj_name, c) in enumerate(seq):
+            if not fact[i]:
+                continue
+            best = None                       # лучший прогноз среди предыдущих `lookback` бакетов
+            for j in range(max(0, i - lookback), i):
+                if best is None or p24[j] > p24[best]:
+                    best = j
+            predicted = best is not None and p24[best] >= thr
+            lead_h = (i - best) * BUCKET_H if best is not None else None
+            prev_ts = seq[best][0].bucket_ts if best is not None else None
+            if camp[i]:
+                planned_total += 1            # массовая сработка = ППР/плановая проверка
+            else:
+                events_total += 1
+                if predicted:
+                    predicted_total += 1
+                    if lead_h:
+                        leads.append(lead_h)
+                else:
+                    missed += 1
+            ac = _alarm_class(st)
+            items.append({
+                "channel_id": p.channel_id,
+                "object_id": p.object_id,
+                "object_name": obj_name,
+                "тип_датчика": st,
+                "название_датчика": sn,
+                "bucket_ts": p.bucket_ts.isoformat(),
+                "произошло": p.bucket_ts.strftime("%d.%m %H:%M"),
+                "предсказано": bool(predicted),
+                "предсказано_за_ч": lead_h if predicted else None,
+                "прогноз_бакет_ts": prev_ts.isoformat() if predicted and prev_ts else None,
+                "прогноз_бакет": prev_ts.strftime("%d.%m %H:%M") if predicted and prev_ts else None,
+                "прогноз_p24": round(p24[best], 4) if predicted else None,
+                "risk30_на_факте": p.risk30,
+                "класс_события": ac["класс"],
+                "группа_события": ac["группа"],
+                "prediction_id": p.id,
+                "прогноз_prediction_id": seq[best][0].id if best is not None else None,
+                "похоже_на_ППР": bool(camp[i]),
+                "событий_в_бакете": int(c),
+                "вид_факта": FACT_KIND_RU.get(task, "событие"),
+            })
+    items.sort(key=lambda x: x["bucket_ts"], reverse=True)
+    leads.sort()
+    return {
+        "task": task,
+        "task_desc": task_cfg.TASKS[task]["desc"],
+        "fact_kind": FACT_KIND_RU.get(task, "событие"),
+        "threshold": thr,
+        "alert_q": q,
+        "alert_q_by_task": ALERT_Q_BY_TASK,
+        "base_rate": round(base, 5),
+        "auto_threshold": auto_thr,
+        "horizon_h": lookback * BUCKET_H,
+        "campaign_min": int(campaign_min),
+        "summary": {
+            "events": events_total,
+            "planned_ppr": planned_total,
+            "predicted": predicted_total,
+            "missed": missed,
+            "alerts": alerts,
+            "hits": hits,
+            "precision": round(hits / alerts, 3) if alerts else None,
+            "recall": round(predicted_total / events_total, 3) if events_total else None,
+            "median_lead_h": leads[len(leads) // 2] if leads else None,
+        },
+        "items": items[:n],
+        "note": ("факты — тревожные сообщения/неисправности журнала СМВУ в 6ч-бакете канала; "
+                 "«предсказано» — модель давала P(событие ≤ 24 ч) не ниже порога в одном из "
+                 "предыдущих бакетов того же канала. Порог = квантиль alert_q распределения p24 "
+                 "задачи (верхние прогнозы); массовые сработки помечены как ППР и исключены "
+                 "из метрик"),
+    }
 
 
 def graph_data(db: Session, max_per_hub: int = 40) -> dict:

@@ -49,12 +49,16 @@ Views.dashboard = (() => {
     const topCard = renderTop(main, state, task, hz, top, topObj);
     const tkCard = renderTickets(state, tickets);
     const trendCard = renderTrend(main, state, task);
+    const factCard = renderFacts(state);
 
     const g1 = el(`<div class="grid2 rv"><div class="stack"></div><div class="stack"></div></div>`);
     g1.children[0].appendChild(trendCard);
     g1.children[0].appendChild(tkCard);
     g1.children[1].appendChild(topCard);
     F.appendChild(g1);
+    const g2 = el(`<div class="grid2 rv"><div class="stack" data-key="facts"></div><div class="stack"></div></div>`);
+    g2.children[0].appendChild(factCard);
+    F.appendChild(g2);
 
     UI.mount(main, F, { merge: !!main.dataset.mounted, quiet: silent });
     main.dataset.mounted = "1";
@@ -68,8 +72,66 @@ Views.dashboard = (() => {
     return true;
   }
 
-  /* Тренд риска: свой выбор горизонта (1/3/7/30 дней) и режима «средний/максимум».
-     Карточка сама грузит данные — переключение не перерисовывает весь пульт. */
+  /* Реальные происшествия (журнал) против прогнозов: что произошло и когда это предсказали.
+     Карточка грузит данные сама (как тренд), поэтому не тормозит пульт при тиках. */
+  let factGen = 0;
+  function renderFacts(state) {
+    const task = state.task || "wear";
+    const card = el(`<div class="card spot rv" id="factcard"><div class="ct">${ic("activity", "s")}
+      Реальные происшествия и прогнозы
+      <span class="grow"></span>
+      <span class="faint" id="fact-thr" style="font-size:11px"></span>
+      <button class="btn ghost xs" id="fact-rf">${ic("refresh", "s")} обновить</button></div>
+      <div class="row wrap" id="fact-sum" style="gap:8px;margin:8px 0"></div>
+      <div class="tscroll" id="fact-body" style="max-height:360px"></div>
+      <div class="faint" id="fact-note" style="font-size:11px;margin-top:6px"></div></div>`);
+    const load = async () => {
+      const my = ++factGen;
+      const d = await API.get(`/meta/events?task=${task}&n=60`).catch(() => null);
+      if (my !== factGen || !card.isConnected) return;
+      const sum = card.querySelector("#fact-sum"), body = card.querySelector("#fact-body");
+      const note = card.querySelector("#fact-note"), thr = card.querySelector("#fact-thr");
+      if (!d || !d.summary) {
+        body.innerHTML = UI.emptyState("не удалось получить факты", "alert", "err-state");
+        return;
+      }
+      const s = d.summary;
+      const pct = v => v === null || v === undefined ? "—" : Math.round(v * 100) + "%";
+      thr.textContent = `порог p24 ≥ ${d.threshold} · ${d.fact_kind}`;
+      sum.innerHTML = [
+        ["событий", s.events, ""],
+        [`предсказано`, `${s.predicted} (${pct(s.recall)})`, s.recall >= 0.5 ? "low" : "mid"],
+        ["алертов", s.alerts, ""], ["попаданий", `${s.hits} (${pct(s.precision)})`, ""],
+        ["упреждение", s.median_lead_h === null ? "—" : s.median_lead_h + " ч", ""],
+        ["ППР (искл.)", s.planned_ppr, "faint"],
+      ].map(([l, v, cls]) => `<span class="badge ${cls}">${esc(l)}: <b>${esc(String(v))}</b></span>`).join("");
+      const it = d.items || [];
+      body.innerHTML = it.length ? `<table class="tbl"><thead><tr>
+          <th>произошло</th><th>что именно</th><th>класс</th><th>предсказано</th></tr></thead><tbody>
+        ${it.slice(0, 40).map(x => `<tr data-pid="${x.prediction_id || ""}" data-fpid="${x.прогноз_prediction_id || ""}"
+            style="cursor:pointer">
+          <td class="num">${esc(x.произошло)}<div class="faint" style="font-size:10px">${esc(x.событий_в_бакете || 0)} соб.</div></td>
+          <td><b>${esc(x.тип_датчика || "—")}</b>${x.название_датчика ? ` · ${esc(x.название_датчика)}` : ""}
+            <div class="faint" style="font-size:10.5px">объект ${esc(x.object_id)}${x.object_name ? " · " + esc(x.object_name) : ""}
+            ${x.похоже_на_ППР ? ' · <span class="badge faint">ППР</span>' : ""}</div></td>
+          <td>${x.группа_события ? `<span class="badge ${x.класс_события === "авария" ? "high" : "mid"}">${esc(x.группа_события)}</span>` : "—"}</td>
+          <td>${x.предсказано
+            ? `<span class="badge low">${esc(x.прогноз_бакет)}</span>
+               <div class="faint" style="font-size:10.5px">за ${x.предсказано_за_ч} ч · p24=${x.прогноз_p24}</div>`
+            : '<span class="badge high">пропущено моделью</span>'}</td></tr>`).join("")}
+      </tbody></table>` : UI.emptyState("в текущем круге реплея происшествий пока нет", "activity");
+      body.querySelectorAll("[data-fpid],[data-pid]").forEach(tr => tr.onclick = () => {
+        const pid = +tr.dataset.fpid || +tr.dataset.pid;
+        if (pid) Cards.forecast.open(pid, { onDecided: () => renderFacts(state) });
+      });
+      note.textContent = d.note || "";
+    };
+    card.querySelector("#fact-rf").onclick = load;
+    load();
+    return card;
+  }
+
+
   const MEAS = [["p24", "1 день"], ["p72", "3 дня"], ["p7d", "7 дней"], ["risk30", "30 дней"]];
   /* Тренд риска: свой выбор горизонта (1/3/7/30 дней) и режима «средний/максимум».
      Карточка сама грузит данные — переключение не перерисовывает весь пульт.
