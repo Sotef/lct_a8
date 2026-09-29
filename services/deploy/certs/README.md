@@ -30,6 +30,10 @@ docker compose --profile tls up -d                                    # подн
 > ⚠️ Запускать генератор нужно с хоста (через venv) или через `docker compose exec` — если запустить
 > `python scripts/make_dev_certs.py` **внутри** контейнера вручную (`docker exec ... sh`), файлы
 > попадут в контейнер и `proxy` их не увидит (он монтирует `./deploy/certs` с хоста).
+>
+> Порядок важен: сначала сертификаты, потом `--profile tls up -d`. Если `proxy` уже успел
+> поубиваться без сертификатов, он останется в бэк-оффе — после генерации сделайте
+> `docker compose restart proxy` (или `docker compose --profile tls up -d --force-recreate`).
 
 Скрипту нужен только пакет `cryptography` (приходит с `python-jose[cryptography]`), `openssl` не требуется.
 Существующие сертификаты не перезаписываются (`--force`), срок — `--days`, каталог — `--out`.
