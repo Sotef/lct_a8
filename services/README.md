@@ -376,16 +376,29 @@ SPA раздаётся тем же FastAPI: **http://127.0.0.1:8000/** (`app/web
 `app/services/maintenance_service.py` + `app/api/maintenance.py`.
 
 - **Источники заявок**: `auto` — каждые 6 ч сим-времени из прогнозов актуального
-  бакета (`risk30 ≥ AUTO_TICKETS_MIN_RISK`, не больше `AUTO_TICKETS_TOP_K` на
-  направление); `decision` — решение диспетчера «профилактика» в карточке;
+  бакета; `decision` — решение диспетчера «профилактика» в карточке;
   `manual` — `POST /maintenance/tickets`;
+- **приоритизация** (подробно — корневой `README.md` §8):
+  * порог вероятности свой на направление (`AUTO_TICKETS_MIN_RISK_BY_TASK`) и
+    ослабляется по классу последствия: `eff = base × SEVERITY_REF/severity`;
+  * ограничение — ресурс, а не top-K: ≤ `AUTO_TICKETS_TOP_K` новых за тик и
+    ≤ `AUTO_TICKETS_NEAR_CAP` открытых near-term заявок на направление;
+  * бакеты «кампанийных» недель (`prediction.campaign=1`) пропускаются (ППР ≠ отказ);
+- **план ТО**: `due_to = min(бакет + clamp(exp_days,1,90), norm_due)`, где `norm_due` —
+  ближайшая дата ТО по периодичности (`app/services/to_norm.py`) от **первой записи
+  датчика** (`app/services/channel_meta.py`, артефакт `data/channel_first_seen.csv`);
+  приоритет — по риску и горизонту плана;
+- **анти-«прыжки»**: гистерезис `PLAN_HYSTERESIS_DAYS` (срок открытой `suggested`-заявки
+  двигается только при сдвиге больше порога) + заморозка даты, назначенной диспетчером;
+  в заявке хранятся `age_days`, `norm_due`, `rationale` (JSON «почему такая дата»);
 - **дедупликация**: одна открытая заявка на канал × направление;
 - **жизненный цикл**: предложена → назначена → в работе → выполнена (либо
   отменена); переходы проверяются на сервере (409 при недопустимом), техник
   может только брать в работу и закрывать назначенные ему заявки;
-- срок: `due_to = бакет + clamp(exp_days, 1, 30) дней`, приоритет по risk30/p72;
 - `GET /maintenance/tickets|summary`, `POST /maintenance/tickets`,
   `PATCH /maintenance/tickets/{id}`, `POST /maintenance/auto-generate`.
+- **график обслуживания** (`GET /maintenance/tickets?order=due`) в UI группируется по
+  дате плана → объекту («выезд» = все датчики объекта), а не по отдельным заявкам.
 
 ## Проверка фронтенда
 
@@ -432,7 +445,7 @@ top-risks с полями объекта, карточка с S(t)/factors, grap
 | POST | /auth/login, /auth/refresh, /auth/admin/create-user | вход / токен / создание пользователя |
 | GET  | /auth/me | текущий пользователь |
 | GET  | /top-risks?task=&k=&bucket= | топ-K RBAM (актуальный/выбранный бакет) |
-| GET  | /maintenance-plan?task= | план ТО (горизонты по exp_days) |
+| GET  | /maintenance-plan?task= | план ТО: горизонты по `min(прогноз, норматив)`, + медианы возраста и нормативного срока |
 | GET  | /forecasts?task=&object_id=&bucket= | журнал прогнозов |
 | GET  | /forecasts/{id}, /forecasts/{id}/factors | карточка + факторы «почему» |
 | POST | /forecasts/{id}/decision | решение диспетчера (+ audit + метки для дообучения) |
@@ -479,7 +492,7 @@ top-risks с полями объекта, карточка с S(t)/factors, grap
 Docker Desktop живёт в WSL2 и по умолчанию может занять до половины RAM хоста (в наших прогонах
 `vmmem` доходил до 15,4 ГБ). Полный набор тестов можно прогонять **локальным uvicorn** на SQLite —
 это в разы легче и не мешает демо-стеку. Проверено: uvicorn + сим-часы в этой конфигурации
-занимают ≈0,8 ГБ, все наборы проходят (`DEPLOY VERIFY`, UI/FRONT CONTRACT, SMOKE, API 31, E2E 33 шага).
+занимают ≈0,8 ГБ, все наборы проходят (`DEPLOY VERIFY`, UI/FRONT CONTRACT, SMOKE, pytest 79, E2E 33 шага).
 
 ```powershell
 cd services

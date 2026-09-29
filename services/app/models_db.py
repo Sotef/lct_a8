@@ -51,6 +51,11 @@ class Prediction(Base):
     features_json = Column(JSON)                # полный срез фич канала
     event_flag = Column(Integer, default=0)     # активное событие на бакете
     obs_days = Column(Float)                    # дней с последнего события
+    # --- план ТО (см. README «План ТО: как приоритизируются заявки») ---
+    age_days = Column(Float)                    # возраст оборудования: первая запись датчика
+    norm_due = Column(DateTime(timezone=True))  # нормативный срок следующего ТО
+    campaign = Column(Integer, default=0)       # бакет в «кампанийной» (ППР/аномальной) неделе
+    plan_date = Column(DateTime(timezone=True))  # дата плана = min(прогноз, норматив)
     # 1 = прогноз «закреплён» как метка: на него ссылается решение диспетчера,
     # такие строки НЕ удаляются при перезапуске реплея и не участвуют в запросах
     # «текущего бакета» (нужны для дообучения — признаки + метка в одном месте)
@@ -166,6 +171,10 @@ class MaintenanceTask(Base):
     priority = Column(String(10), default="medium")    # high|medium|low
     comment = Column(Text)
     updated_at = Column(DateTime(timezone=True), nullable=True)
+    # --- обоснование плана ТО (для прозрачности и анти-прыжков) ---
+    age_days = Column(Float)                    # возраст оборудования на момент заявки
+    norm_due = Column(DateTime(timezone=True))  # нормативный срок ТО (по периодичности)
+    rationale = Column(Text)                    # JSON: почему такая дата/приоритет
 
 
 class Setting(Base):

@@ -90,7 +90,12 @@ def tickets_summary(db: Session = Depends(get_db),
     out = ms.summary(db, object_ids=scoped_object_ids(user, db))
     out["auto"] = {"enabled": bool(config.AUTO_TICKETS),
                    "min_risk": config.AUTO_TICKETS_MIN_RISK,
-                   "top_k": config.AUTO_TICKETS_TOP_K}
+                   "min_risk_by_task": config.AUTO_TICKETS_MIN_RISK_BY_TASK,
+                   "severity_ref": config.AUTO_TICKETS_SEVERITY_REF,
+                   "top_k": config.AUTO_TICKETS_TOP_K,
+                   "near_cap": config.AUTO_TICKETS_NEAR_CAP,
+                   "hysteresis_days": config.PLAN_HYSTERESIS_DAYS,
+                   "forecast_cap_days": config.PLAN_FORECAST_CAP_DAYS}
     return out
 
 

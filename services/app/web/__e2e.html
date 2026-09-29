@@ -193,6 +193,17 @@ window.addEventListener("load", async () => {
       return `ответ: «${t.trim().slice(0, 60)}»`;
     }, () => true);
 
+    /* 2b. План ТО + график обслуживания (группировка по «выездам») ---------- */
+    await step("План ТО: таблица и график по выездам", async () => {
+      await App.navigate("plan");
+      await wait(() => q("#pagebox") && /План превентивного ТО/.test(q("#pagebox").textContent || ""), 9000);
+      await wait(() => q("#sched-body table"), 12000);
+      const tbl = q("#pagebox table.tbl");
+      const visits = q("#sched-body").querySelectorAll(".card.flat").length;
+      const rows = q("#sched-body").querySelectorAll("tbody tr").length;
+      return `строк плана=${tbl ? tbl.querySelectorAll("tbody tr").length : 0} · выездов=${visits} · заявок=${rows}`;
+    }, () => !!q("#pagebox table.tbl") && !!q("#sched-body"));
+
     /* 3. Заявки ------------------------------------------------------------- */
     await step("Заявки: раздел, список и поиск", async () => {
       await App.navigate("tickets");

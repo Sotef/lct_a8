@@ -40,6 +40,21 @@ def _f(v):
         return None
 
 
+def _dtv(v):
+    """Значение -> datetime или None (для norm_due/plan_date)."""
+    if v is None:
+        return None
+    try:
+        if pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    try:
+        return pd.Timestamp(v).to_pydatetime()
+    except (TypeError, ValueError):
+        return None
+
+
 def features_slice(subject_row: pd.Series, task: str) -> dict:
     """JSON-срез фич канала (карточка «факторы», без служебных колонок)."""
     cols = ml_registry.get(task)["feature_cols"]
@@ -139,6 +154,10 @@ def compute_and_store_bucket(task: str, bucket: int, db: Session,
             features_json=features_slice(subj, task),
             event_flag=int(row["event_flag"]) if not pd.isna(row["event_flag"]) else 0,
             obs_days=_f(row["obs_days"]),
+            age_days=_f(row.get("age_days")),
+            norm_due=_dtv(row.get("norm_due")),
+            plan_date=_dtv(row.get("plan_date")),
+            campaign=int(row.get("campaign") or 0),
             model_version=version,
         ))
     db.add_all(rows)
@@ -262,6 +281,11 @@ def _pred_to_item(p: dbm.Prediction, sensor_type=None, sensor_name=None,
         "plan": p.plan,
         "event_flag": p.event_flag,
         "obs_days": p.obs_days,
+        # --- план ТО (см. README «План ТО: как приоритизируются заявки») ---
+        "age_years": round(p.age_days / 365.25, 2) if p.age_days is not None else None,
+        "norm_due": p.norm_due.isoformat() if p.norm_due else None,
+        "plan_date": p.plan_date.isoformat() if p.plan_date else None,
+        "campaign": int(p.campaign or 0),
     }
 
 
@@ -472,15 +496,26 @@ def maintenance_plan(task: str, db: Session,
     agg: dict = {}
     for p, stype in fetched:
         key = (p.plan or "плановый", stype or "прочее")
-        a = agg.setdefault(key, [0, 0.0, 0.0, []])
-        a[0] += 1
-        a[1] += (p.risk30_cal if p.risk30_cal is not None else p.risk30) or 0.0
-        a[2] += p.score or 0.0
-        a[3].append(p.exp_days or 0.0)
+        a = agg.setdefault(key, {"n": 0, "risk": 0.0, "score": 0.0,
+                                 "exp": [], "age": [], "norm": []})
+        a["n"] += 1
+        a["risk"] += (p.risk30_cal if p.risk30_cal is not None else p.risk30) or 0.0
+        a["score"] += p.score or 0.0
+        a["exp"].append(p.exp_days or 0.0)
+        if p.age_days is not None:
+            a["age"].append(p.age_days / 365.25)
+        if p.norm_due is not None and p.bucket_ts is not None:
+            a["norm"].append((p.norm_due.replace(tzinfo=None)
+                              - p.bucket_ts.replace(tzinfo=None)).days)
     rows = []
-    for (plan, typ), (n, risk_sum, score_sum, exps) in sorted(agg.items()):
+    for (plan, typ), a in sorted(agg.items()):
+        n = a["n"]
         rows.append({"plan": plan, "тип_датчика": typ, "каналов": n,
-                     "риск_средний": round(risk_sum / n, 4),
-                     "score_сумма": round(score_sum, 4),
-                     "exp_days_медиана": round(statistics.median(exps), 4)})
+                     "риск_средний": round(a["risk"] / n, 4),
+                     "score_сумма": round(a["score"], 4),
+                     "exp_days_медиана": round(statistics.median(a["exp"]), 4),
+                     "возраст_лет_медиана": (round(statistics.median(a["age"]), 2)
+                                             if a["age"] else None),
+                     "норматив_дней_медиана": (round(statistics.median(a["norm"]), 1)
+                                               if a["norm"] else None)})
     return {"task": task, "rows": rows}

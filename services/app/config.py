@@ -2,6 +2,7 @@
 """Конфигурация сервиса (единая точка настроек)."""
 from __future__ import annotations
 
+import json as _json
 import os
 import pathlib
 
@@ -97,10 +98,37 @@ LOG_FILE_MAX_MB = int(os.getenv("LOG_FILE_MAX_MB", "20"))
 LOG_FILE_BACKUPS = int(os.getenv("LOG_FILE_BACKUPS", "5"))
 LOG_BUFFER_SIZE = int(os.getenv("LOG_BUFFER_SIZE", "3000"))  # live-буфер для UI
 SLOW_REQUEST_MS = int(os.getenv("SLOW_REQUEST_MS", "1500"))  # порог WARNING
-# Автоформирование превентивных заявок на каждом сим-тике/цикле прогноза
+# Автоформирование превентивных заявок на каждом сим-тике/цикле прогноза.
+#
+# Приоритизация (см. README «План ТО: как приоритизируются заявки»):
+#   * порог по вероятности — свой для задачи (`AUTO_TICKETS_MIN_RISK_BY_TASK`):
+#     у моделей разная шкала (только `access` калибрована, у fire/wear вероятности
+#     крупнее) — единый порог сравнивал бы несравнимое;
+#   * порог ослабляется по классу последствия: чем тяжелее тип датчика
+#     (severity, SEVERITY_MAP v1), тем при меньшей вероятности заводим заявку:
+#     eff = base_task × (SEVERITY_REF / severity);
+#   * ограничение — не «слепой top-K до дедупа», а ресурс: не больше
+#     `AUTO_TICKETS_TOP_K` новых заявок за тик и не больше `AUTO_TICKETS_NEAR_CAP`
+#     открытых near-term заявок на задачу (иначе очередь не отработать).
 AUTO_TICKETS = os.getenv("AUTO_TICKETS", "1") == "1"
-AUTO_TICKETS_MIN_RISK = float(os.getenv("AUTO_TICKETS_MIN_RISK", "0.5"))
-AUTO_TICKETS_TOP_K = int(os.getenv("AUTO_TICKETS_TOP_K", "15"))
+AUTO_TICKETS_MIN_RISK = float(os.getenv("AUTO_TICKETS_MIN_RISK", "0.5"))  # fallback
+AUTO_TICKETS_TOP_K = int(os.getenv("AUTO_TICKETS_TOP_K", "60"))           # ёмкость за тик
+_BY_TASK_DEFAULT = {"fire": 0.30, "access": 0.45, "sensor": 0.45, "wear": 0.50}
+if os.getenv("AUTO_TICKETS_MIN_RISK") is not None:
+    # явный env-порог трактуем как единый base для всех направлений
+    AUTO_TICKETS_MIN_RISK_BY_TASK = {t: AUTO_TICKETS_MIN_RISK for t in _BY_TASK_DEFAULT}
+else:
+    try:
+        AUTO_TICKETS_MIN_RISK_BY_TASK = _json.loads(os.getenv(
+            "AUTO_TICKETS_MIN_RISK_BY_TASK", _json.dumps(_BY_TASK_DEFAULT)))
+    except ValueError:
+        AUTO_TICKETS_MIN_RISK_BY_TASK = dict(_BY_TASK_DEFAULT)
+AUTO_TICKETS_SEVERITY_REF = float(os.getenv("AUTO_TICKETS_SEVERITY_REF", "0.6"))
+AUTO_TICKETS_NEAR_CAP = int(os.getenv("AUTO_TICKETS_NEAR_CAP", "500"))
+# Плановые даты: гистерезис (не двигаем срок открытой заявки при мелких сдвигах)
+# и потолок «прогнозного срока» (дней), чтобы min(прогноз, норматив) был осмысленным.
+PLAN_HYSTERESIS_DAYS = int(os.getenv("PLAN_HYSTERESIS_DAYS", "5"))
+PLAN_FORECAST_CAP_DAYS = int(os.getenv("PLAN_FORECAST_CAP_DAYS", "90"))
 
 # Сколько каналов на задачу получают SHAP-факторы «почему» (самое дорогое место
 # тика: ~43 с на задачу при 400). Уменьшение ускоряет прокрут, но карточки

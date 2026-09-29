@@ -312,13 +312,24 @@ Views.tickets = (() => {
         ${t.sensor_type ? ` · ${esc(t.sensor_type)}` : ""} · район ${esc(t.district || "—")}</div>
       <div class="muted" style="margin-top:4px">${ic("clock", "s")} срок до ${dt(t.due_to)}
         ${t.scheduled_at ? ` · <b>назначено на ${dt(t.scheduled_at)}</b>` : " · дата выезда не назначена"}
-        ${t.assignee ? ` · исполнитель ${esc(t.assignee)}` : " · исполнитель не назначен"}</div></div>
+        ${t.assignee ? ` · исполнитель ${esc(t.assignee)}` : " · исполнитель не назначен"}</div>
+      <div class="muted" style="margin-top:4px">${ic("activity", "s")} план ТО:
+        возраст ${t.age_years != null ? fmt(t.age_years, 1) + " лет" : "—"} ·
+        норматив ${t.norm_due ? dt(t.norm_due) : "—"}
+        ${t.campaign ? ' · <span class="badge faint">кампания/ППР</span>' : ""}</div></div>
       <div class="dsec rv"><h4>${ic("target", "s")} Оценка модели</h4><div class="pgrid">
         <div class="pbox"><div class="l">риск 30 дней</div><div class="v" data-c="${t.risk || 0}">—</div>
           <div class="rbar"><i data-w="${Math.min(100, (t.risk || 0) * 100)}" style="background:${UI.riskColor(t.risk || 0)}"></i></div></div>
         <div class="pbox"><div class="l">p24</div><div class="v" data-p="${t.p24 || 0}">—</div></div>
         <div class="pbox"><div class="l">ожидание, дней</div><div class="v" data-e="${t.exp_days || 0}">—</div></div>
-        <div class="pbox"><div class="l">score</div><div class="v" data-s="${t.score || 0}">—</div></div></div></div>
+        <div class="pbox"><div class="l">score</div><div class="v" data-s="${t.score || 0}">—</div></div></div>
+        ${t.rationale ? `<div class="faint" style="margin-top:8px;font-size:11px">почему такая дата:
+          прогноз ${t.rationale["прогноз_дней"] != null ? fmt(t.rationale["прогноз_дней"], 1) + " дн" : "—"} ·
+          норматив ${t.rationale["норматив"] ? String(t.rationale["норматив"]).slice(0, 10) : "—"} ·
+          возраст ${t.rationale["возраст_лет"] != null ? fmt(t.rationale["возраст_лет"], 1) + " лет" : "—"} ·
+          severity ${t.rationale["severity"] != null ? fmt(t.rationale["severity"], 2) : "—"} ·
+          эффективный порог ${t.rationale["min_risk_эффективный"] != null ? fmt(t.rationale["min_risk_эффективный"], 2) : "—"}
+          ${t.rationale["кампания"] ? " · <b>кампанийная неделя</b>" : ""}</div>` : ""}</div></div>
       <div class="dsec rv"><h4>${ic("info", "s")} Журнал заявки</h4>
         <div class="timeline"><div class="tl-i"><b>создана</b> · <span class="faint">${dt(t.created_at)}</span>
           <div class="muted">источник: ${esc(t.source === "auto" ? "автоформирование по прогнозу"

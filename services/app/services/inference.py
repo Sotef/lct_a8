@@ -11,9 +11,12 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from .. import config
 from .. import task_cfg
 from ..research_bridge import module as _m
+from . import channel_meta as cm
 from . import ml_registry
+from . import to_norm
 
 SEVERITY_BY_TYPE = _m("inference_contract").SEVERITY_BY_TYPE
 DEFAULT_SEVERITY = _m("inference_contract").DEFAULT_SEVERITY
@@ -97,7 +100,26 @@ def rbam_frame(task: str, subjects: pd.DataFrame) -> pd.DataFrame:
     else:
         out["scale"] = 1.0
     out["score"] = out["risk_used"] * out["severity"] * out["scale"]
-    out["plan"] = out["exp_days"].map(plan_bucket)
+
+    # --- план ТО: возраст оборудования, нормативный срок, дата плана -----------
+    # Возраст — по первой записи датчика за всё время (channel_meta);
+    # нормативный срок — по периодичности ТО (to_norm);
+    # дата плана = min(прогнозный срок, нормативный) — «не позже любого из сроков».
+    chans = out["ид_канала_данных"].astype(str).tolist()
+    types = out["тип_датчика"].tolist()
+    nows = [cm.bucket_dt(b) for b in out["бакет"].tolist()]
+    firsts = [cm.first_seen(c) for c in chans]
+    out["age_days"] = [cm.age_days(c, w) for c, w in zip(chans, nows)]
+    out["norm_due"] = [to_norm.norm_due(f, w, to_norm.norm_period_days(task, t))
+                       for f, w, t in zip(firsts, nows, types)]
+    out["plan_date"] = [
+        to_norm.plan_date(w, e, nd, cap_days=config.PLAN_FORECAST_CAP_DAYS)
+        for w, e, nd in zip(nows, out["exp_days"].tolist(), out["norm_due"].tolist())]
+    out["plan"] = [to_norm.horizon_of(w, p) for w, p in zip(nows, out["plan_date"])]
+    if "аномально" in subjects.columns:
+        out["campaign"] = subjects["аномально"].fillna(False).astype(int).to_numpy()
+    else:
+        out["campaign"] = 0
     # ВАЖНО: НЕ reset_index — индекс остаётся позицией строки в subjects,
     # чтобы S(t)/SHAP/фичи выровнялись с отсортированным rb по orig-индексу.
     out = out.sort_values("score", ascending=False)

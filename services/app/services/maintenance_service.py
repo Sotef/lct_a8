@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 
 from fastapi import HTTPException
@@ -25,7 +26,9 @@ from .. import models_db as dbm
 from .. import task_cfg
 from ..logging_setup import log_event
 from . import audit_service
+from . import channel_meta as cm
 from . import prediction_service as ps
+from . import to_norm
 
 log = logging.getLogger("maintenance")
 
@@ -50,15 +53,75 @@ def _risk(p: dbm.Prediction) -> float:
     return float(r or 0.0)
 
 
-def _priority(p: dbm.Prediction) -> str:
+def _priority(p: dbm.Prediction, plan_dt: dt.datetime | None = None) -> str:
+    """Приоритет заявки: класс последствия (severity через risk-порог) + горизонт плана.
+
+    high   — risk ≥ 0.8, либо p72 ≥ 0.5, либо плановый срок ≤ 7 дней при risk ≥ 0.5;
+    medium — risk ≥ 0.5 или плановый срок ≤ 21 дня;
+    low    — остальное (дальний горизонт, невысокий риск).
+    `plan_dt` — дата плана (см. to_norm.plan_date); без неё приоритет только по риску.
+    """
     r = _risk(p)
-    if r >= 0.8 or (p.p72 or 0) >= 0.5:
+    days = None
+    if plan_dt is not None and p.bucket_ts is not None:
+        days = (plan_dt - _naive(p.bucket_ts)).total_seconds() / 86400.0
+    if r >= 0.8 or (p.p72 or 0) >= 0.5 or (days is not None and days < 7 and r >= 0.5):
         return "high"
-    return "medium" if r >= 0.5 else "low"
+    if r >= 0.5 or (days is not None and days < 21):
+        return "medium"
+    return "low"
+
+
+def _effective_min_risk(task: str, severity) -> float:
+    """Порог автоформирования с поправкой на класс последствия.
+
+    base — порог направления (у моделей разная шкала вероятностей);
+    чем тяжелее тип датчика (severity), тем ниже требуемая вероятность:
+        eff = base × (SEVERITY_REF / severity), затем ограничиваем [0.2, 0.9].
+    """
+    base = float(config.AUTO_TICKETS_MIN_RISK_BY_TASK.get(
+        task, config.AUTO_TICKETS_MIN_RISK))
+    ref = float(config.AUTO_TICKETS_SEVERITY_REF)
+    try:
+        sev = float(severity)
+    except (TypeError, ValueError):
+        sev = ref
+    if sev <= 0:
+        sev = ref
+    return min(0.9, max(0.2, base * (ref / sev)))
 
 
 def _naive(d):
     return d.replace(tzinfo=None) if d is not None and d.tzinfo else d
+
+
+def _plan_dt(pred: dbm.Prediction) -> dt.datetime | None:
+    """Дата плана заявки: из прогноза (`plan_date`), иначе min(прогноз, норматив)."""
+    now = _naive(pred.bucket_ts) or dt.datetime.utcnow()
+    if pred.plan_date is not None:
+        return _naive(pred.plan_date)
+    nd = _naive(pred.norm_due)
+    fc = to_norm.forecast_due(now, pred.exp_days, cap_days=config.PLAN_FORECAST_CAP_DAYS)
+    if fc is None:
+        return nd or (now + dt.timedelta(days=1))
+    return min(fc, nd) if nd is not None else fc
+
+
+def _rationale(pred: dbm.Prediction, plan_dt: dt.datetime | None) -> str:
+    """Почему такая дата/приоритет — прозрачно (JSON в заявке)."""
+    now = _naive(pred.bucket_ts)
+    data = {
+        "прогноз_дней": round(float(pred.exp_days), 2) if pred.exp_days is not None else None,
+        "норматив": _naive(pred.norm_due).isoformat() if pred.norm_due else None,
+        "дата_плана": _naive(plan_dt).isoformat() if plan_dt else None,
+        "возраст_лет": round(float(pred.age_days) / 365.25, 2) if pred.age_days else None,
+        "severity": pred.severity, "scale": pred.scale, "score": pred.score,
+        "risk_used": pred.risk30_cal if pred.risk30_cal is not None else pred.risk30,
+        "min_risk_эффективный": round(_effective_min_risk(pred.task, pred.severity), 3),
+        "кампания": int(pred.campaign or 0),
+        "bucket": now.isoformat() if now else None,
+    }
+    return json.dumps(data, ensure_ascii=False)
 
 
 def _find_open(db: Session, task: str, channel_id: str):
@@ -73,31 +136,58 @@ def create_from_prediction(db: Session, pred: dbm.Prediction, source: str,
                            comment: str | None = None,
                            scheduled_at: dt.datetime | None = None,
                            commit: bool = True) -> tuple[dbm.MaintenanceTask, bool]:
-    """Создаёт заявку (или возвращает уже открытую). -> (ticket, created)."""
+    """Создаёт заявку (или возвращает уже открытую). -> (ticket, created).
+
+    Дата плана: `due_to = min(прогнозный срок, нормативный срок ТО)` (см. to_norm).
+    Против «прыжков» графика работает **гистерезис**: срок и горизонт уже открытой
+    и никем не назначенной заявки (`suggested`, без `scheduled_at`) обновляются
+    только если новая дата уехала больше чем на `PLAN_HYSTERESIS_DAYS` дней.
+    Назначенные/в работе/закрытые заявки срок не меняют вообще (их ведёт человек).
+    """
+    plan_dt = _plan_dt(pred)
+    prio = _priority(pred, plan_dt)
     existing = _find_open(db, pred.task, pred.channel_id)
     if existing is not None:
         if status == "assigned" and existing.status == "suggested":
             existing.status = "assigned"
             existing.assigned_to = existing.assigned_to or user_id
-            existing.updated_at = dt.datetime.now(dt.timezone.utc)
             existing.prediction_id = pred.id
+        # возраст/норматив — справочные поля, их обновляем всегда (не влияют на график)
+        existing.age_days = pred.age_days
+        existing.norm_due = _naive(pred.norm_due)
+        # «заморозка» срока: человек уже назначил выезд или заявка не в статусе «предложена»
+        frozen = existing.scheduled_at is not None or existing.status != "suggested"
+        if not frozen:
+            old = _naive(existing.due_to)
+            if old is None:
+                existing.due_to = plan_dt
+            elif plan_dt is not None:
+                shift = abs((plan_dt - old).total_seconds()) / 86400.0
+                if shift > config.PLAN_HYSTERESIS_DAYS:      # анти-прыжок
+                    existing.due_to = plan_dt
+                    existing.plan_bucket = pred.plan
+                    existing.rationale = _rationale(pred, plan_dt)
+        if not existing.rationale:
+            existing.rationale = _rationale(pred, plan_dt)   # обоснование заполняем один раз
+        existing.score = pred.score
+        existing.priority = prio
+        existing.prediction_id = pred.id
+        existing.updated_at = dt.datetime.now(dt.timezone.utc)
         if scheduled_at is not None:
             existing.scheduled_at = scheduled_at
-            existing.updated_at = dt.datetime.now(dt.timezone.utc)
-            if commit:
-                db.commit()
-        elif commit:
+        if commit:
             db.commit()
         return existing, False
     start = _naive(pred.bucket_ts) or dt.datetime.utcnow()
-    days = min(30.0, max(1.0, float(pred.exp_days or 7.0)))
     t = dbm.MaintenanceTask(
         task=pred.task, channel_id=pred.channel_id, object_id=pred.object_id,
         plan_bucket=pred.plan, score=pred.score, status=status,
-        due_from=start, due_to=start + dt.timedelta(days=days),
+        due_from=start, due_to=plan_dt,
         scheduled_at=scheduled_at,
         assigned_to=user_id if status == "assigned" else None,
-        prediction_id=pred.id, source=source, priority=_priority(pred),
+        prediction_id=pred.id, source=source, priority=prio,
+        age_days=pred.age_days, norm_due=_naive(pred.norm_due),
+        rationale=_rationale(pred, plan_dt),
         comment=comment, updated_at=dt.datetime.now(dt.timezone.utc))
     db.add(t)
     db.flush()
@@ -108,36 +198,76 @@ def create_from_prediction(db: Session, pred: dbm.Prediction, source: str,
 
 def auto_generate(db: Session, tasks=None, min_risk: float | None = None,
                   top_k: int | None = None, user_id: int | None = None) -> dict:
-    """Автоформирование заявок по актуальному бакету каждой задачи."""
-    min_risk = config.AUTO_TICKETS_MIN_RISK if min_risk is None else min_risk
+    """Автоформирование заявок по актуальному бакету каждой задачи.
+
+    Отличия от «наивного top-K» (см. README «План ТО: как приоритизируются заявки»):
+      * порог по вероятности — свой для задачи и ослабляется по классу последствия
+        (`_effective_min_risk`), поэтому каналы высокого риска не теряются из-за
+        чужой шкалы, а газ/пожарка заводятся при меньшей вероятности, чем «фаза»;
+      * бакеты «кампанийных» недель (ППР/аномалия, `prediction.campaign=1`) не
+        превращаются в заявки на ремонт — это плановые проверки, не отказы;
+      * ограничение — ресурс, а не слепой top-K: не больше `top_k` новых заявок за
+        тик и не больше `AUTO_TICKETS_NEAR_CAP` открытых near-term заявок на задачу.
+    """
     top_k = config.AUTO_TICKETS_TOP_K if top_k is None else top_k
+    near_cap = config.AUTO_TICKETS_NEAR_CAP
     out = {}
     for task in (tasks or task_cfg.ALL_TASKS):
         last = ps.latest_bucket_ts(db, task)
         if last is None:
-            out[task] = {"created": 0, "skipped": 0}
+            out[task] = {"created": 0, "skipped": 0, "campaign_skipped": 0,
+                         "capacity_left": near_cap}
             continue
-        risk_col = func.coalesce(dbm.Prediction.risk30_cal, dbm.Prediction.risk30)
+        # near-term ёмкость: сколько ещё открытых заявок «на квартал» можем завести
+        near_open = (db.query(func.count(dbm.MaintenanceTask.id))
+                     .filter(dbm.MaintenanceTask.task == task,
+                             dbm.MaintenanceTask.status.in_(OPEN),
+                             dbm.MaintenanceTask.plan_bucket.in_(
+                                 ("текущий квартал", "следующий квартал")))
+                     .scalar() or 0)
+        budget = max(0, min(int(top_k), int(near_cap) - int(near_open)))
         preds = (db.query(dbm.Prediction)
                  .filter(dbm.Prediction.task == task,
-                         dbm.Prediction.bucket_ts == last,
-                         risk_col >= min_risk)
-                 .order_by(dbm.Prediction.score.desc().nulls_last())
-                 .limit(top_k).all())
-        created = skipped = 0
+                         dbm.Prediction.bucket_ts == last)
+                 .order_by(dbm.Prediction.score.desc().nulls_last()).all())
+        created = skipped = camp = 0
+        base_hint = {}
         for p in preds:
+            if budget <= 0:
+                break
+            if int(p.campaign or 0) == 1:                 # кампания/ППР — не отказ
+                camp += 1
+                continue
+            base = min_risk if min_risk is not None else config.AUTO_TICKETS_MIN_RISK_BY_TASK.get(
+                task, config.AUTO_TICKETS_MIN_RISK)
+            try:
+                eff = min(0.9, max(0.2, float(base) * (
+                    config.AUTO_TICKETS_SEVERITY_REF /
+                    (float(p.severity) if p.severity else config.AUTO_TICKETS_SEVERITY_REF))))
+            except (TypeError, ValueError):
+                eff = float(base)
+            base_hint[task] = round(eff, 3)
+            r = p.risk30_cal if p.risk30_cal is not None else p.risk30
+            if (r or 0) < eff:
+                continue
             _, is_new = create_from_prediction(db, p, source="auto", commit=False)
             created += int(is_new)
             skipped += int(not is_new)
+            if is_new:
+                budget -= 1
         db.commit()
-        out[task] = {"created": created, "skipped": skipped}
+        out[task] = {"created": created, "skipped": skipped,
+                     "campaign_skipped": camp, "budget": budget,
+                     "min_risk_effective": base_hint.get(task)}
     total = sum(v["created"] for v in out.values())
     if total or user_id is not None:
         audit_service.record(db, "ticket.auto_generate", user_id=user_id,
                              entity_type="maintenance", entity_id="batch",
-                             detail={"result": out, "min_risk": min_risk, "top_k": top_k})
+                             detail={"result": out, "top_k": top_k, "near_cap": near_cap})
     log_event(log, logging.INFO, f"auto tickets: +{total}", result=out)
-    return {"created": total, "by_task": out, "min_risk": min_risk, "top_k": top_k}
+    return {"created": total, "by_task": out, "top_k": top_k, "near_cap": near_cap,
+            "min_risk_by_task": {t: _effective_min_risk(t, None)
+                                 for t in (tasks or task_cfg.ALL_TASKS)}}
 
 
 def service_now() -> dt.datetime:
@@ -169,6 +299,16 @@ def _ticket_out(t: dbm.MaintenanceTask, obj=None, ch=None, assignee=None,
                 now: dt.datetime | None = None) -> dict:
     now = now or service_now()
     due = _naive(t.due_to)
+    # возраст/норматив: из заявки, иначе считаем на лету (старые заявки без этих полей)
+    when = _naive(t.due_from) or _naive(t.created_at) or now
+    age_days = t.age_days
+    if age_days is None:
+        age_days = cm.age_days(t.channel_id, when)
+    norm_due = t.norm_due or (pred.norm_due if pred is not None else None)
+    if norm_due is None:                       # старые заявки — считаем норматив на лету
+        norm_due = to_norm.norm_due(cm.first_seen(t.channel_id), when,
+                                    to_norm.norm_period_days(
+                                        t.task, getattr(ch, "sensor_type", None)))
     return {
         "id": t.id, "task": t.task,
         "task_desc": task_cfg.TASKS.get(t.task, {}).get("desc", t.task),
@@ -193,7 +333,22 @@ def _ticket_out(t: dbm.MaintenanceTask, obj=None, ch=None, assignee=None,
         "overdue": bool(due and t.status in OPEN and due < now),
         "created_at": t.created_at.isoformat() if t.created_at else None,
         "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+        # --- обоснование плана ТО (возраст, норматив, почему такая дата) ---
+        "age_days": age_days,
+        "age_years": round(age_days / 365.25, 2) if age_days else None,
+        "norm_due": norm_due.isoformat() if norm_due else None,
+        "rationale": _rationale_out(t.rationale),
     }
+
+
+def _rationale_out(raw) -> dict | None:
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except (TypeError, ValueError):
+        return None
 
 
 def list_tickets(db: Session, task: str | None = None, status: str | None = None,

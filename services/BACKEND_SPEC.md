@@ -165,6 +165,9 @@ severity — `inference_contract.SEVERITY_BY_TYPE`, scale — по числу а
 - **predictions**(id PK, task, channel_id, object_id, bucket_ts timestamptz, p24, p72,
   **p7d** NULL (P(событие ≤ 7 дней), §11.12), risk30,
   risk30_cal NULL, exp_days, score NULL, severity NULL, scale NULL, plan NULL,
+  **age_days** NULL (возраст: первая запись датчика, §11.2), **norm_due** NULL
+  (нормативный срок ТО), **plan_date** NULL (min(прогноз, норматив)), **campaign** 0/1
+  (кампанийная неделя ППР/аномалии),
   features_json jsonb NULL, model_version, created_at)
   Индексы: (task, bucket_ts), (object_id, task), (task, score desc)
 - **decisions**(id PK, prediction_id FK, decision ENUM('confirm','reject','preventive'),
@@ -176,8 +179,10 @@ severity — `inference_contract.SEVERITY_BY_TYPE`, scale — по числу а
 - **object_risk_l2**(id, object_id, task, channel_count, risk30_max, risk30_mean,
   top_channels, updated_at) — материализация из `research/dataset/l2_object_risk.parquet`
 - **maintenance_tasks**(id, task, channel_id, object_id, plan_bucket, score,
-  due_from, due_to, **scheduled_at** NULL (дата выезда диспетчера, §11.13), status,
-  assigned_to FK NULL, created_at)
+  due_from, due_to (**дата плана = min(прогноз, норматив)**, §11.2),
+  **scheduled_at** NULL (дата выезда диспетчера, §11.13), status,
+  assigned_to FK NULL, created_at, **age_days** / **norm_due** (обоснование плана),
+  **rationale** TEXT (JSON: прогноз/норматив/возраст/severity/порог/кампания))
 - **settings**(key, value jsonb) — пороги топ-K, границы плана (exp_days<7 / <21 / >21)
 
 ### 6.2 Карточка прогноза (`GET /forecasts/{id}`) — обязательный сценарий
@@ -267,14 +272,26 @@ severity — `inference_contract.SEVERITY_BY_TYPE`, scale — по числу а
   `POST /auth/logout`, `POST /auth/admin/users/{id}/active`.
 
 ### 11.2 Модуль превентивных заявок (maintenance_tasks)
-- `maintenance_service.py`: `auto` (на каждом тике сим-времени, порог
-  `AUTO_TICKETS_MIN_RISK`, до `AUTO_TICKETS_TOP_K` на направление), `decision`
+Полное изложение приоритизации и анти-прыжков — корневой `README.md` §8.
+
+- `maintenance_service.py`: `auto` (на каждом тике сим-времени), `decision`
   (решение «профилактика»), `manual`. Дедупликация: одна открытая заявка на канал × направление.
 - Статусы `suggested → assigned → in_progress → done` (+ `cancelled`), переходы
   валидируются на сервере (409), техник — только взять в работу / закрыть.
-  `due_to = бакет + clamp(exp_days, 1, 30)`; приоритет по risk30/p72.
+- **Дата плана**: `due_to = min(бакет + clamp(exp_days, 1, 90), norm_due)`, где `norm_due` —
+  ближайшая дата ТО по периодичности (`to_norm.py`, 180/365 дней по типу датчика) от
+  **первой записи датчика** (`channel_meta.py` + `data/channel_first_seen.csv`; реестр
+  оборудования не используется). Приоритет — по risk30/p72 и горизонту плана.
+- **Приоритизация auto**: порог вероятности свой на направление
+  (`AUTO_TICKETS_MIN_RISK_BY_TASK`) и ослабляется по severity
+  (`eff = base × AUTO_TICKETS_SEVERITY_REF / severity`); ёмкость — `AUTO_TICKETS_TOP_K`
+  новых за тик + `AUTO_TICKETS_NEAR_CAP` открытых near-term на направление;
+  бакеты `campaign=1` пропускаются.
+- **Анти-прыжки**: гистерезис `PLAN_HYSTERESIS_DAYS` для `suggested`-заявок без
+  `scheduled_at`; заявки с датой от диспетчера или статусом ≠ `suggested` модель не двигает.
 - Ручки: `GET /maintenance/tickets|summary`, `POST /maintenance/tickets`,
-  `PATCH /maintenance/tickets/{id}`, `POST /maintenance/auto-generate`.
+  `PATCH /maintenance/tickets/{id}`, `POST /maintenance/auto-generate`; график
+  (`order=due`) в UI группируется по «выездам» (объект × дата).
 - Отказ диспетчера в карточке прогноза закрывает предложенную авто-заявку по каналу.
 
 ### 11.3 Веб-интерфейс
@@ -308,7 +325,9 @@ offscreen-фрагмент (`UI.stage()`) и попадают в живой ко
 ### 11.4 Новые переменные окружения
 `LOG_DIR`, `LOG_LEVEL`, `LOG_JSON`, `LOG_FILE_MAX_MB`, `LOG_FILE_BACKUPS`,
 `LOG_BUFFER_SIZE`, `SLOW_REQUEST_MS`, `AUTO_TICKETS`, `AUTO_TICKETS_MIN_RISK`,
-`AUTO_TICKETS_TOP_K` (см. `.env.example`).
+`AUTO_TICKETS_MIN_RISK_BY_TASK`, `AUTO_TICKETS_SEVERITY_REF`, `AUTO_TICKETS_TOP_K`,
+`AUTO_TICKETS_NEAR_CAP`, `PLAN_HYSTERESIS_DAYS`, `PLAN_FORECAST_CAP_DAYS`
+(см. `.env.example` и корневой `README.md` §8).
 
 ### 11.6 Реплей данных: цикл и управление
 Период реплея конечен (01.01.2026…30.06.2026), поэтому добавлено:

@@ -43,9 +43,14 @@ Views.plan = (() => {
       qcards.appendChild(c);
     });
 
-    const card = el(`<div class="card flat"><table class="tbl"><thead><tr>
+    const card = el(`<div class="card flat">
+      <div class="note">Срок = <b>min(прогнозный срок, нормативный срок ТО)</b> — выезд не позже любого из двух.
+        Нормативный срок считается от <b>первой записи датчика</b> (возраст оборудования) по периодичности ТО
+        (пожарная/механика — 2 раза в год, СКУД/КИП — 1 раз в год). Подробнее — README «План ТО».</div>
+      <table class="tbl"><thead><tr>
       <th>Горизонт</th><th>Тип канала</th><th>Каналов</th><th>Ср. риск</th>
-      <th>Σ score</th><th>Медиана ожидания</th><th></th></tr></thead><tbody></tbody></table></div>`);
+      <th>Σ score</th><th>Медиана ожидания</th><th>Возраст (мед.)</th>
+      <th>Норматив (мед.)</th><th></th></tr></thead><tbody></tbody></table></div>`);
     const tb = card.querySelector("tbody");
     if (!rows.length) tb.appendChild(el(`<tr><td colspan="7">${UI.emptyState("нет данных — запустите прогнозный цикл или снимите фильтр", "calendar")}</td></tr>`));
     rows.forEach((r, i) => {
@@ -57,6 +62,8 @@ Views.plan = (() => {
         <td class="num" style="color:${UI.riskColor(r["риск_средний"])}">${fmt(r["риск_средний"], 3)}</td>
         <td class="num">${fmt(r.score_сумма, 2)}</td>
         <td class="num">${fmt(r.exp_days_медиана, 1)} дн</td>
+        <td class="num">${r["возраст_лет_медиана"] != null ? fmt(r["возраст_лет_медиана"], 1) + " лет" : "—"}</td>
+        <td class="num">${r["норматив_дней_медиана"] != null ? fmt(r["норматив_дней_медиана"], 0) + " дн" : "—"}</td>
         <td><div class="rbar" style="width:140px;margin:0"><i data-w="${(r.score_сумма || 0) / maxScore * 100}"></i></div></td></tr>`);
       tr.onclick = () => state.navigate("forecasts");
       tb.appendChild(tr);
@@ -139,43 +146,64 @@ Views.plan = (() => {
         body.appendChild(el(UI.emptyState(`в ближайшие ${days || "любые"} дней заявок на обслуживание нет`, "calendar")));
         return;
       }
-      /* группировка по дате выезда */
+      /* Группировка: дата плана → объект. Один «выезд» = все каналы одного объекта
+         в этот день (несколько датчиков — одна поездка бригады, а не N заявок). */
       const byDay = new Map();
       rows.forEach(t => {
         const p = t.plan_at || t.due_to;
         const day = p ? p.slice(0, 10) : "без даты";
-        if (!byDay.has(day)) byDay.set(day, []);
-        byDay.get(day).push(t);
+        if (!byDay.has(day)) byDay.set(day, new Map());
+        const byObj = byDay.get(day);
+        const ok = t.object_id || "—";
+        if (!byObj.has(ok)) byObj.set(ok, []);
+        byObj.get(ok).push(t);
       });
+      const PRIO = { high: 3, medium: 2, low: 1 };
       const wrap = el(`<div class="stack" style="gap:14px"></div>`);
       [...byDay.keys()].sort().forEach(day => {
-        const list = byDay.get(day);
-        const closed = list.filter(t => !["suggested", "assigned", "in_progress"].includes(t.status)).length;
+        const visits = [...byDay.get(day).values()];
+        const nTickets = visits.reduce((a, v) => a + v.length, 0);
         wrap.appendChild(el(`<div>
           <div class="row" style="margin-bottom:6px"><b class="num">${esc(day === "без даты" ? day : dt(day + "T09:00:00"))}</b>
-            <span class="badge ${day === "без даты" ? "" : "info"}">${list.length} заявок</span>
-            ${closed ? `<span class="faint" style="font-size:11.5px">${closed} уже закрыто/отменено</span>` : ""}</div>
-          <table class="tbl"><thead><tr><th>Объект</th><th>Датчик / канал</th><th>Направление</th>
-            <th>Статус</th><th>Приоритет</th><th>Исполнитель</th><th>№</th></tr></thead><tbody>
-            ${list.map(t => `<tr class="rrow" data-id="${t.id}">
-              <td><b>${esc(t.object_name || t.object_id)}</b>
-                <div class="faint" style="font-size:11px">${esc(t.district || "")}</div></td>
-              <td class="muted">${esc(t.sensor_name || t.channel_id)}</td>
-              <td>${esc(t.task_desc)}</td>
-              <td><span class="badge ${t.status === "done" ? "low" : t.status === "cancelled" ? "" :
-                t.status === "in_progress" ? "mid" : "info"}">${esc(t.status_ru)}</span>
-                ${t.overdue ? '<span class="badge high">просрочено</span>' : ""}</td>
-              <td class="muted">${esc(t.priority)}</td>
-              <td class="muted">${esc(t.assignee || "—")}</td>
-              <td class="num faint">#${t.id}</td></tr>`).join("")}
-          </tbody></table></div>`));
+            <span class="badge ${day === "без даты" ? "" : "info"}">${visits.length} выездов · ${nTickets} заявок</span></div>
+          <div class="stack" style="gap:8px">
+          ${visits.map(v => {
+            const first = v[0];
+            const prio = v.map(x => x.priority).sort((a, b) => (PRIO[b] || 0) - (PRIO[a] || 0))[0] || "low";
+            const closed = v.filter(t => !["suggested", "assigned", "in_progress"].includes(t.status)).length;
+            const ages = v.map(x => x.age_years).filter(x => x != null);
+            const ageMed = ages.length ? ages.reduce((a, b) => a + b, 0) / ages.length : null;
+            return `<div class="card flat" style="padding:10px 12px">
+              <div class="row wrap" style="gap:8px;align-items:center">
+                <b>${esc(first.object_name || first.object_id)}</b>
+                <span class="badge ${prio === "high" ? "high" : prio === "medium" ? "mid" : "low"}">приоритет ${esc(prio)}</span>
+                <span class="badge">${v.length} канал(ов)</span>
+                ${ageMed != null ? `<span class="faint" style="font-size:11px">возраст ~${fmt(ageMed, 1)} лет</span>` : ""}
+                ${closed ? `<span class="faint" style="font-size:11px">${closed} закрыто/отменено</span>` : ""}
+                <span class="grow"></span>
+                <span class="faint" style="font-size:11px">${esc(first.district || "")}</span></div>
+              <table class="tbl" style="margin-top:6px"><thead><tr><th>Датчик / канал</th><th>Направление</th>
+                <th>Срок</th><th>Статус</th><th>Исполнитель</th><th>№</th></tr></thead><tbody>
+                ${v.map(t => `<tr class="rrow" data-id="${t.id}">
+                  <td class="muted">${esc(t.sensor_name || t.channel_id)}
+                    <div class="faint" style="font-size:10.5px">${esc(t.sensor_type || "")}</div></td>
+                  <td>${esc(t.task_desc)}</td>
+                  <td class="muted">${dt(t.plan_at || t.due_to)}${t.overdue ? ' <span class="badge high">просрочено</span>' : ""}</td>
+                  <td><span class="badge ${t.status === "done" ? "low" : t.status === "cancelled" ? "" :
+                    t.status === "in_progress" ? "mid" : "info"}">${esc(t.status_ru)}</span></td>
+                  <td class="muted">${esc(t.assignee || "—")}</td>
+                  <td class="num faint">#${t.id}</td></tr>`).join("")}
+              </tbody></table></div>`;
+          }).join("")}
+          </div></div>`));
       });
       body.appendChild(wrap);
       body.querySelectorAll("tr[data-id]").forEach(tr => tr.onclick = () =>
         Views.tickets.openCard(+tr.dataset.id, state));
       body.appendChild(el(`<div class="faint" style="font-size:11.5px;margin-top:10px">
-        всего в графике: ${rows.length} · отсчёт от сим-времени ${dt(simNow.toISOString())}
-        (даты выезда назначает диспетчер в карточке заявки)</div>`));
+        всего в графике: ${rows.length} · отсчёт от сим-времени ${dt(simNow.toISOString())}<br>
+        срок = min(прогнозный, нормативный срок ТО); дата «предложенной» заявки не «прыгает» при
+        мелких пересчётах (гистерезис), назначенную диспетчером дату модель не меняет</div>`));
     };
     FX.seg(card.querySelector("#schrng"), b => {
       range = b.dataset.r; localStorage.setItem("mc_sched_range", range); draw();
