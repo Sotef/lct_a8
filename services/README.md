@@ -314,7 +314,7 @@ SPA раздаётся тем же FastAPI: **http://127.0.0.1:8000/** (`app/web
 
 | Раздел | Роль | Что внутри |
 |---|---|---|
-| Пульт | все | KPI по 4 направлениям с count-up, тренд риска (**горизонт 1/3/7/30 дней** + тумблер «максимум»), топ-риски (объекты/датчики, горизонт 24 ч/72 ч/30 дн), донат заявок, лента аудита |
+| Пульт | все | KPI по 4 направлениям с count-up, тренд риска (**горизонт 1/3/7/30 дней**, **сглаживание 6 ч / 24 ч / 3 сут** и тумблер «максимум»), топ-риски (объекты/датчики, горизонт 24 ч/72 ч/30 дн), донат заявок, лента аудита |
 | Объекты | все | список с сортировкой/фильтрами + карта-радар (SVG, зум/пан, пульс высокого риска); риск = **максимум P(событие ≤ 7 дней)** по каналам (L2 risk30 — в подсказках) |
 | Граф систем | диспетчер, central | force-layout объектов ↔ пикетов, подсветка соседей, зум |
 | Журнал прогнозов | все | фильтры, сортировка по столбцам, CSV, карточка прогноза (gauge, S(t), «когда ожидать», SHAP, решения, заявка) |
@@ -409,6 +409,15 @@ docker compose cp app/web/__mprobe.html api:/workspace/services/app/web/__mprobe
 
 `tests/front_contract_check.py` — контракт фронт↔бэкенд (summary, risk-history,
 top-risks с полями объекта, карточка с S(t)/factors, graph, decision).
+
+> **Про тренд риска:** средний риск бакета считается по «активным» каналам, а их число в бакете
+> меняется на порядок (в демо 16…1146 при медиане ≈60), поэтому сырая кривая «пилит» и на каждом
+> тике выглядит новой. Ручка `/meta/risk-history` отдаёт `avg_risk`, `avg_risk_raw`,
+> `avg_risk_smooth` (скользящее среднее по репрезентативным бакетам), `max_risk`, `n` и `low_n`
+> (мало каналов — точка ненадёжна); клиент по умолчанию сглаживает 24 ч и пишет это в подписи.
+> Замер на живых данных: кривая становится ровнее в 3,1–6,9 раза (средний шаг 0,18 → 0,04 для
+> износа/risk30). Диагностический зонд `app/web/__tprobe.html` фиксирует, какой горизонт
+> запрашивается и что реально нарисовано после перерисовок пульта.
 Служебные страницы `app/web/__probe.html` и `app/web/__mprobe.html` — для headless-прогонов
 (`web_smoke.ps1` и мобильного профиля); в образ они не попадают (`.dockerignore`),
 для запуска в Docker их копируют `docker compose cp`.
@@ -458,6 +467,45 @@ top-risks с полями объекта, карточка с S(t)/factors, grap
 .venv\Scripts\python.exe -m pytest tests -q   # unit: адаптер/панель/согласование
 .venv\Scripts\python.exe tests\pipeline_smoke.py wear   # сквозной (реальные данные)
 ```
+
+### Прогон тестов без Docker (экономит RAM: ~0,8 ГБ против ~15 ГБ у WSL)
+
+Docker Desktop живёт в WSL2 и по умолчанию может занять до половины RAM хоста (в наших прогонах
+`vmmem` доходил до 15,4 ГБ). Полный набор тестов можно прогонять **локальным uvicorn** на SQLite —
+это в разы легче и не мешает демо-стеку. Проверено: uvicorn + сим-часы в этой конфигурации
+занимают ≈0,8 ГБ, все наборы проходят (`DEPLOY VERIFY`, UI/FRONT CONTRACT, SMOKE, API 30, E2E 33 шага).
+
+```powershell
+cd services
+# 1) отдельная тестовая БД (не трогает демо data/app.db) + схема, демо-пользователи, справочники
+$env:DATABASE_URL='sqlite:///d:/Downloads_D/lct_a8/services/data/local_test.db'
+.\.venv\Scripts\python.exe scripts\seed.py
+
+# 2) локальный сервер: сим-часы, тик 20 с, без SHAP (быстро и легко)
+$env:SIM_CLOCK='1'; $env:SIM_TICK_REAL_SEC='20'; $env:SHAP_TOP_K='0'; $env:AUTO_TICKETS='1'
+Start-Process -FilePath '.\.venv\Scripts\python.exe' -ArgumentList @('-m','uvicorn','app.main:app',
+  '--host','127.0.0.1','--port','8000','--workers','1') -RedirectStandardOutput 'data\_local.log' `
+  -RedirectStandardError 'data\_local_err.log' -WindowStyle Hidden
+Remove-Item Env:DATABASE_URL,Env:SIM_CLOCK,Env:SIM_TICK_REAL_SEC,Env:SHAP_TOP_K,Env:AUTO_TICKETS
+
+# 3) проверки (сервер уже на :8000 — контракты и verify_deploy ждут именно его)
+.\.venv\Scripts\python.exe scripts\verify_deploy.py
+.\.venv\Scripts\python.exe tests\ui_contract_check.py
+.\.venv\Scripts\python.exe tests\front_contract_check.py      # каждая строка запускается отдельно
+.\.venv\Scripts\python.exe tests\smoke_new_api.py
+.\.venv\Scripts\python.exe -m pytest tests\test_buttons_api.py -q
+
+# 4) кнопочный E2E — без Docker: драйвер раздаёт сам uvicorn (-Project не указываем)
+powershell -File tests\run_buttons_e2e.ps1 -Fast
+```
+
+Плюс: `services/data/local_test.db` — одноразовая БД, удаляется вместе с папкой данных;
+`panels/` (319 МБ) уже есть на диске, пересборка не нужна.
+
+> **Если Docker всё-таки нужен:** создайте `%USERPROFILE%\.wslconfig` со строками
+> `[wsl2]` / `memory=4GB` / `processors=4` / `swap=2GB` и выполните `wsl --shutdown` —
+> сервису (postgres 14 + FastAPI + nginx) этого хватает, а `vmmem` перестанет «съедать» всю RAM.
+> Вернуть прежнее поведение — удалить файл и снова `wsl --shutdown`.
 
 ### «Кнопочные» тесты (каждая функция/кнопка: роль, эффект, время)
 

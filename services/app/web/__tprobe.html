@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><title>tprobe</title>
+<link rel="stylesheet" href="/css/themes.css"><link rel="stylesheet" href="/css/core.css">
+<link rel="stylesheet" href="/css/shell.css"><link rel="stylesheet" href="/css/topbar.css">
+<link rel="stylesheet" href="/css/components.css"><link rel="stylesheet" href="/css/buttons.css">
+<link rel="stylesheet" href="/css/widgets.css"><link rel="stylesheet" href="/css/overlays.css">
+<link rel="stylesheet" href="/css/overlays2.css"><link rel="stylesheet" href="/css/pages.css">
+<link rel="stylesheet" href="/css/pages2.css"><link rel="stylesheet" href="/css/anim.css">
+<style>#probe-out{position:fixed;left:0;bottom:0;z-index:9999;font:10px monospace;background:#000;color:#0f0;
+  max-height:60vh;overflow:auto;margin:0;padding:4px;white-space:pre-wrap}</style>
+</head>
+<body data-theme="obsidian">
+<div id="app"></div>
+<pre id="probe-out"></pre>
+<script src="/js/icons.js"></script><script src="/js/ui.js"></script><script src="/js/bgfx.js"></script>
+<script src="/js/fx.js"></script><script src="/js/mobile/offline.js"></script><script src="/js/api.js"></script>
+<script src="/js/mobile/push.js"></script><script src="/js/mobile/photo.js"></script>
+<script src="/js/charts.js"></script><script src="/js/charts2.js"></script><script src="/js/charts3.js"></script>
+<script src="/js/overlays.js"></script><script src="/js/cmdk.js"></script><script src="/js/card_forecast.js"></script>
+<script src="/js/card_object.js"></script><script src="/js/notify.js"></script><script src="/js/view_alerts.js"></script>
+<script src="/js/view_dashboard.js"></script><script src="/js/view_objects.js"></script><script src="/js/view_graph.js"></script>
+<script src="/js/view_forecasts.js"></script><script src="/js/view_plan.js"></script><script src="/js/view_tickets.js"></script>
+<script src="/js/view_audit.js"></script><script src="/js/view_sys.js"></script><script src="/js/view_users.js"></script>
+<script src="/js/login.js"></script><script src="/js/mobile/shell.js"></script><script src="/js/app.js"></script>
+<script>
+/* Зонд тренда: что запрашивается и что реально нарисовано после повторных перерисовок пульта
+   (перерисовка = то, что делает сим-тик). Отчёт — в #probe-out и в document.title. */
+const out = document.getElementById("probe-out");
+const log = s => { out.textContent += s + "\n"; };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const q = s => document.querySelector(s);
+const qa = s => [...document.querySelectorAll(s)];
+const REQ = [];
+const _get = API.get.bind(API);
+API.get = function (path, ttl) {
+  const p = _get(path, ttl);
+  if (String(path).includes("risk-history")) {
+    const rec = { url: String(path), t: REQ.length };
+    REQ.push(rec);
+    p.then(d => {
+      const rows = (d && d.rows) || [];
+      rec.rows = rows.length;
+      rec.last = rows.length ? rows[rows.length - 1] : null;
+      rec.measure_ru = (d && d.measure_ru) || "";
+    }).catch(() => { rec.err = 1; });
+  }
+  return p;
+};
+
+function snapshot(tag) {
+  const body = q("#trend-body");
+  const inCard = body && body.closest("[data-key='trend']");
+  const hint = (q("#trend-hint") || {}).textContent || "";
+  const paths = body ? body.querySelectorAll("path").length : -1;
+  const onSeg = (q("#tseg button.on") || {}).dataset?.m || "—";
+  const cards = qa("#pagebox .card .ct").map(c => (c.textContent || "").trim().split(" · ")[0].slice(0, 24));
+  const req = REQ[REQ.length - 1] || {};
+  const svg = body && body.querySelector("svg");
+  const rec = {
+    tag, seg: onSeg,
+    ls: { measure: localStorage.getItem("mc_trend_measure"), max: localStorage.getItem("mc_trend_max") },
+    inTrendCard: !!inCard, svgPaths: paths,
+    hint: hint.replace(/\s+/g, " ").slice(0, 80),
+    api: { url: req.url || "", rows: req.rows, avg: req.last && req.last.avg_risk, mx: req.last && req.last.max_risk },
+    axis: svg ? (svg.textContent || "").replace(/\s+/g, " ").trim().slice(0, 50) : "",
+    cards: cards.join(" | ").slice(0, 140),
+  };
+  log(JSON.stringify(rec));
+  return rec;
+}
+
+window.addEventListener("load", async () => {
+  try {
+    await sleep(300);
+    if (!q("#shell")) {
+      const demo = qa(".login-wrap .drow button").find(b => b.dataset.u === "central.operator");
+      if (demo) demo.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      for (let i = 0; i < 60 && !q("#shell"); i++) await sleep(200);
+    }
+    App.navigate("dashboard");
+    await sleep(2500);
+    log("=== 1. исходное состояние");
+    snapshot("initial");
+
+    const seg30 = qa("#tseg button").find(b => b.dataset.m === "risk30");
+    if (seg30) seg30.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await sleep(1500);
+    log("=== 2. после клика «30 дней» (risk30)");
+    snapshot("click-30d");
+
+    for (let i = 1; i <= 4; i++) {
+      const box = document.getElementById("pagebox");
+      try { await Views.dashboard.render(box, App.state, true); } catch (e) { log("render error: " + e.message); }
+      await sleep(2000);
+      log(`=== 3.${i} после перерисовки (аналог тика) #${i}`);
+      snapshot("tick" + i);
+    }
+    const cb = q("#tmax");
+    if (cb) { cb.checked = false; cb.dispatchEvent(new Event("change")); }
+    await sleep(1500);
+    log("=== 4. после снятия «максимум»");
+    snapshot("max-off");
+
+    log("");
+    log("=== ВСЕ ЗАПРОСЫ risk-history ===");
+    REQ.forEach((r, i) => log(`${i}: ${r.url} rows=${r.rows} avg=${r.last && r.last.avg_risk} max=${r.last && r.last.max_risk}`));
+    document.title = "TPROBE DONE";
+  } catch (e) {
+    log("EXCEPTION: " + (e && e.message));
+    document.title = "TPROBE ERR";
+  }
+});
+</script>
+</body>
+</html>

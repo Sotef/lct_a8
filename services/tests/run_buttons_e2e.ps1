@@ -83,8 +83,24 @@ else {
   $url = "$Base/__e2e.html?$q"
   $tmp = Join-Path $env:TEMP ("e2e_" + [guid]::NewGuid().ToString("N") + ".html")
   Say "  открываю $url (таймаут $TimeoutSec с)"
+  # быстрая проверка синтаксиса JS драйвера: опечатка в шагах иначе проявится только
+  # как «прогон не завершился» (страница вообще не выполнит отчёт)
+  $driverFile = Join-Path $svc "app\web\__e2e.html"
+  $nodeExe = (Get-Command node -ErrorAction SilentlyContinue).Source
+  if ($nodeExe) {
+    $m = [regex]::Match((Get-Content -Raw -Encoding UTF8 $driverFile), '(?s)<script>(.*?)</script>')
+    if ($m.Success) {
+      $jsTmp = Join-Path $env:TEMP ("e2e_check_" + [guid]::NewGuid().ToString("N") + ".js")
+      [IO.File]::WriteAllText($jsTmp, $m.Groups[1].Value, [Text.UTF8Encoding]::new($false))
+      & $nodeExe --check $jsTmp 2>&1 | Out-Null
+      $jsOk = ($LASTEXITCODE -eq 0)
+      Remove-Item $jsTmp -Force -ErrorAction SilentlyContinue
+      if (-not $jsOk) { throw "синтаксическая ошибка в app/web/__e2e.html — прогон остановлен (проверьте node --check)" }
+      Say "  драйвер __e2e.html: синтаксис JS OK"
+    }
+  }
   $eargs = @("--headless=new", "--disable-gpu", "--no-sandbox", "--window-size=$Window",
-            "--virtual-time-budget=600000", "--dump-dom", $url)
+            "--virtual-time-budget=2400000", "--dump-dom", $url)
   $p = Start-Process -FilePath $browser -ArgumentList $eargs -NoNewWindow -PassThru `
         -RedirectStandardOutput $tmp -RedirectStandardError (Join-Path $env:TEMP "e2e_err.txt")
   if (-not $p.WaitForExit($TimeoutSec * 1000)) {
@@ -101,6 +117,9 @@ else {
   Say ""
   ($probe -split "`n") | ForEach-Object { Say ("  " + $_) }
   Say ""
+  if ($title -notlike "E2E*") {
+    Say "  ⚠ прогон интерфейса не завершился (бюджет виртуального времени/таймаут): title=$title"
+  }
   Say "  ИТОГ интерфейса: $title"
   if ($md) { $out += $md }
 }

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><title>smprobe</title>
+<link rel="stylesheet" href="/css/themes.css"><link rel="stylesheet" href="/css/core.css">
+<link rel="stylesheet" href="/css/shell.css"><link rel="stylesheet" href="/css/topbar.css">
+<link rel="stylesheet" href="/css/components.css"><link rel="stylesheet" href="/css/buttons.css">
+<link rel="stylesheet" href="/css/widgets.css"><link rel="stylesheet" href="/css/overlays.css">
+<link rel="stylesheet" href="/css/overlays2.css"><link rel="stylesheet" href="/css/pages.css">
+<link rel="stylesheet" href="/css/pages2.css"><link rel="stylesheet" href="/css/anim.css">
+</head>
+<body data-theme="obsidian">
+<div id="app"></div><pre id="probe-out" style="position:fixed;left:0;bottom:0;z-index:9999;font:11px monospace;
+  background:#000;color:#0f0;max-height:50vh;overflow:auto;margin:0;padding:4px"></pre>
+<script src="/js/icons.js"></script><script src="/js/ui.js"></script><script src="/js/bgfx.js"></script>
+<script src="/js/fx.js"></script><script src="/js/mobile/offline.js"></script><script src="/js/api.js"></script>
+<script src="/js/mobile/push.js"></script><script src="/js/mobile/photo.js"></script>
+<script src="/js/charts.js"></script><script src="/js/charts2.js"></script><script src="/js/charts3.js"></script>
+<script src="/js/overlays.js"></script><script src="/js/cmdk.js"></script><script src="/js/card_forecast.js"></script>
+<script src="/js/card_object.js"></script><script src="/js/notify.js"></script><script src="/js/view_alerts.js"></script>
+<script src="/js/view_dashboard.js"></script><script src="/js/view_objects.js"></script><script src="/js/view_graph.js"></script>
+<script src="/js/view_forecasts.js"></script><script src="/js/view_plan.js"></script><script src="/js/view_tickets.js"></script>
+<script src="/js/view_audit.js"></script><script src="/js/view_sys.js"></script><script src="/js/view_users.js"></script>
+<script src="/js/login.js"></script><script src="/js/mobile/shell.js"></script><script src="/js/app.js"></script>
+<script>
+/* Мини-проверка переключателя сглаживания тренда (быстро, без полного E2E). */
+const out = document.getElementById("probe-out");
+const log = s => { out.textContent += s + "\n"; };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const q = s => document.querySelector(s);
+const qa = s => [...document.querySelectorAll(s)];
+const click = e => e.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+const hint = () => ((q("#trend-hint") || {}).textContent || "").replace(/\s+/g, " ").trim();
+const head = () => ((q("[data-key='trend'] .ct") || {}).textContent || "").replace(/\s+/g, " ").trim();
+const paths = () => (q("#trend-body") ? q("#trend-body").querySelectorAll("path").length : -1);
+const wait = async (fn, ms = 6000) => { const t0 = Date.now();
+  while (Date.now() - t0 < ms) { if (fn()) return true; await sleep(120); } return false; };
+
+window.addEventListener("load", async () => {
+  try {
+    await sleep(300);
+    const demo = qa(".login-wrap .drow button").find(b => b.dataset.u === "central.operator");
+    if (demo) click(demo);
+    await wait(() => !!q("#shell"), 15000);
+    App.navigate("dashboard");
+    await wait(() => !!q("#tsm button"), 12000);
+    const btns = qa("#tsm button").map(b => b.dataset.v + ":" + b.textContent.trim());
+    log("шапка тренда: " + head().slice(0, 90));
+    log("кнопки сглаживания: " + btns.join(" | "));
+    log("стартовая подпись: " + hint().slice(0, 100));
+    log("точек (path) в графике: " + paths());
+    const b1 = qa("#tsm button").find(x => x.dataset.v === "1");
+    click(b1);
+    const ok6 = await wait(() => /сглажено 6 ч/.test(hint()));
+    log((ok6 ? "OK   " : "FAIL ") + "клик «6 ч» → " + hint().slice(0, 90));
+    const b4 = qa("#tsm button").find(x => x.dataset.v === "4");
+    click(b4);
+    const ok24 = await wait(() => /сглажено 24 ч/.test(hint()));
+    log((ok24 ? "OK   " : "FAIL ") + "клик «24 ч» → " + hint().slice(0, 90));
+    /* ещё раз проверим устойчивость: перерисовка пульта не должна сбрасывать горизонт/сглаживание */
+    const box = document.getElementById("pagebox");
+    await Views.dashboard.render(box, App.state, true);
+    await sleep(1500);
+    const after = hint();
+    log((/сглажено 24 ч/.test(after) ? "OK   " : "FAIL ") + "после перерисовки → " + after.slice(0, 90));
+    log("локально: " + localStorage.getItem("mc_trend_smooth"));
+    log(ok6 && ok24 && /сглажено 24 ч/.test(after) ? "SMPROBE OK" : "SMPROBE FAIL");
+    document.title = ok6 && ok24 ? "SMPROBE OK" : "SMPROBE FAIL";
+  } catch (e) { log("EXCEPTION: " + (e && e.message)); document.title = "SMPROBE ERR"; }
+});
+</script>
+</body>
+</html>

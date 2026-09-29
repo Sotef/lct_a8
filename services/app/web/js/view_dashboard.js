@@ -133,6 +133,10 @@ Views.dashboard = (() => {
 
 
   const MEAS = [["p24", "1 день"], ["p72", "3 дня"], ["p7d", "7 дней"], ["risk30", "30 дней"]];
+  /* Сглаживание среднего: в бакете от 16 до 1146 активных каналов, поэтому сырое среднее
+     «пилит» и на каждом тике график выглядит новым. По умолчанию 24 ч (4 бакета). */
+  const SMOOTH = [[1, "6 ч"], [4, "24 ч"], [12, "3 сут"]];
+  const MIN_N = 20;                    // бакеты с меньшим числом каналов помечаем как ненадёжные
   /* Тренд риска: свой выбор горизонта (1/3/7/30 дней) и режима «средний/максимум».
      Карточка сама грузит данные — переключение не перерисовывает весь пульт.
 
@@ -145,11 +149,15 @@ Views.dashboard = (() => {
     const { el, esc, ic } = UI;
     let measure = localStorage.getItem("mc_trend_measure") || "risk30";
     let showMax = localStorage.getItem("mc_trend_max") !== "0";
+    let smooth = +localStorage.getItem("mc_trend_smooth") || 4;
     const card = el(`<div class="card spot" data-key="trend"><div class="ct">${ic("activity", "s")} Тренд риска ·
       ${esc(API.TASK_META[task].label)}
       <span class="grow"></span>
       <div class="seg" id="tseg">${MEAS.map(([m, l]) =>
         `<button data-m="${m}" class="${m === measure ? "on" : ""}">${l}</button>`).join("")}</div>
+      <label class="faint" style="font-size:11px;gap:6px">сглаживание
+        <span class="seg" id="tsm">${SMOOTH.map(([v, l]) =>
+          `<button data-v="${v}" class="${v === smooth ? "on" : ""}">${l}</button>`).join("")}</span></label>
       <label class="chk" title="Показывать худший канал — иногда он «прибит» к 100% и зашумляет средний">
         <input type="checkbox" id="tmax" ${showMax ? "checked" : ""}> максимум</label></div>
       <div class="chart-body" id="trend-body" data-keep></div></div>`);
@@ -164,7 +172,8 @@ Views.dashboard = (() => {
         body.innerHTML = "";
         body.appendChild(UI.skeleton(1, 200));
       }
-      const q = `/meta/risk-history?task=${task}&n=120&measure=${measure}`;
+      const q = `/meta/risk-history?task=${task}&n=120&measure=${measure}`
+        + `&smooth=${smooth}&min_n=${MIN_N}`;
       const d = await API.get(q, 20000).catch(() => ({ rows: [] }));
       if (my !== trendGen) return;              // запущен более свежий запрос — этот ответ устарел
       const live = bodyOf();                    // узел мог быть подменён морфингом при перерисовке
@@ -179,14 +188,22 @@ Views.dashboard = (() => {
       const simNow = clk.sim_now ? String(clk.sim_now).slice(0, 16).replace("T", " ") : "—";
       const nextTick = (clk.next_tick_in_sec !== null && clk.next_tick_in_sec !== undefined)
         ? ` · следующий тик ~${clk.next_tick_in_sec} с` : "";
+      const smRu = ({ 1: "6 ч", 4: "24 ч", 12: "3 сут" })[smooth] || `${smooth * 6} ч`;
+      const ns = rows.map(r => r.n || 0);
+      const thin = (d.total || rows.length) - (d.n_valid === undefined ? rows.length : d.n_valid);
       const hint = rows.length >= 2
-        ? `${d.measure_ru || ""} · по 6ч-бакетам, ${rows.length} точек`
+        ? `${d.measure_ru || ""} · сглажено ${smRu} · ${rows.length} точек`
+          + ` · каналов в бакете ${ns.length ? Math.min(...ns) + "…" + Math.max(...ns) : "—"}`
+          + (thin > 0 ? ` · тонких бакетов (n<${MIN_N}): ${thin}` : "")
         : `точек пока ${rows.length} — история накапливается по 6ч-бакету за тик (сим-время ${simNow}${nextTick}). `
           + "После «Заново с января» первый прогноз появляется через ~один тик, кривая растёт дальше сама";
       live.appendChild(el(`<div class="faint" id="trend-hint" style="font-size:11.5px;margin-top:2px">${esc(hint)}</div>`));
     };
     FX.seg(card.querySelector("#tseg"), b => {
       measure = b.dataset.m; localStorage.setItem("mc_trend_measure", measure); draw();
+    });
+    FX.seg(card.querySelector("#tsm"), b => {
+      smooth = +b.dataset.v; localStorage.setItem("mc_trend_smooth", String(smooth)); draw();
     });
     card.querySelector("#tmax").onchange = e => {
       showMax = e.target.checked; localStorage.setItem("mc_trend_max", showMax ? "1" : "0"); draw();

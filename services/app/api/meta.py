@@ -83,38 +83,75 @@ def _hist_window(db: Session, task: str, n: int):
     return last - dt.timedelta(hours=6 * max(1, int(n))), last
 
 
+def _mark_and_smooth(rows: list[dict], smooth: int = 1, min_n: int = 0) -> list[dict]:
+    """Пометить нерепрезентативные бакеты и сгладить средний риск для графика тренда.
+
+    Средний риск бакета считается по «активным» каналам, а их число в бакете меняется на
+    порядок (в демо-данных 16…1146 при медиане ~60). Поэтому сырая кривая «пилит»: тонкие
+    бакеты дают одно среднее, плотные — другое, и график на каждом тике выглядит новым.
+    Здесь: (1) бакеты с `n < min_n` помечаются `low_n` (мало каналов — ненадёжная точка);
+    (2) скользящее среднее по `smooth` бакетам считается только по репрезентативным точкам,
+    поэтому тонкие бакеты не «тянут» линию вниз.
+    """
+    buf: list[float] = []
+    for r in rows:
+        r["avg_risk_raw"] = r["avg_risk"]
+        r["low_n"] = bool(min_n and (r.get("n") or 0) < int(min_n))
+        if not r["low_n"] and r.get("avg_risk") is not None:
+            buf.append(float(r["avg_risk"]))
+            if len(buf) > max(1, int(smooth)):
+                buf.pop(0)
+        r["avg_risk_smooth"] = (round(sum(buf) / len(buf), 4) if (smooth > 1 and buf)
+                                else r["avg_risk"])
+    return rows
+
+
 @router.get("/meta/risk-history")
 def risk_history(task: str = Query(...), n: int = Query(40, ge=1, le=300),
                  measure: str = Query("risk30", pattern="^(risk30|p24|p72|p7d)$"),
+                 smooth: int = Query(1, ge=1, le=28,
+                                     description="сглаживание среднего: окно в 6ч-бакетах"),
+                 min_n: int = Query(0, ge=0, le=100000,
+                                    description="бакеты с меньшим числом каналов помечаются low_n"),
                  db: Session = Depends(get_db),
                  user: dbm.User = Depends(require_roles("dispatcher", "central", "tech"))):
     """Агрегат риска по бакетам (тренд для дашборда).
 
     measure: risk30 (по умолчанию) | p24 (1 день) | p72 (3 дня) | p7d (7 дней из S(t)).
-    Сканируются только последние n бакетов (см. _hist_window) — ответ быстрый и
-    не «догоняет» пользователя при длинном реплее.
+    В каждой строке: `avg_risk` (средний по активным каналам), `avg_risk_raw`,
+    `avg_risk_smooth` (сглаженное среднее), `max_risk`, `n` (каналов в бакете), `low_n`
+    (мало каналов — точка ненадёжная). Сканируются только последние n бакетов
+    (см. _hist_window) — ответ быстрый и не «догоняет» пользователя при длинном реплее.
     """
     if task not in task_cfg.ALL_TASKS:
         raise HTTPException(status_code=400, detail="неизвестная задача")
     lo, hi = _hist_window(db, task, n)
     if lo is None:
-        return {"task": task, "measure": measure, "measure_ru": MEASURES[measure], "rows": []}
+        return {"task": task, "measure": measure, "measure_ru": MEASURES[measure],
+                "smooth": smooth, "min_n": min_n, "n_valid": 0, "rows": []}
     if measure == "p7d":
-        return _history_p7d(db, task, n, lo, hi)
-    col = {"p24": dbm.Prediction.p24, "p72": dbm.Prediction.p72}.get(
-        measure, dbm.Prediction.risk30)
-    rows = (db.query(dbm.Prediction.bucket_ts,
-                     func.avg(col).label("avg"), func.max(col).label("mx"),
-                     func.count(dbm.Prediction.id).label("cnt"))
-            .filter(dbm.Prediction.task == task, dbm.current_only(),
-                    dbm.Prediction.bucket_ts >= lo, dbm.Prediction.bucket_ts <= hi)
-            .group_by(dbm.Prediction.bucket_ts)
-            .order_by(dbm.Prediction.bucket_ts.asc()).all())
-    out = [{"bucket_ts": r[0].isoformat(),
-            "avg_risk": round(float(r[1]), 4) if r[1] is not None else None,
-            "max_risk": round(float(r[2]), 4) if r[2] is not None else None,
-            "n": int(r[3])} for r in rows[-n:]]
-    return {"task": task, "measure": measure, "measure_ru": MEASURES[measure], "rows": out}
+        res = _history_p7d(db, task, n, lo, hi)
+    else:
+        col = {"p24": dbm.Prediction.p24, "p72": dbm.Prediction.p72}.get(
+            measure, dbm.Prediction.risk30)
+        rows = (db.query(dbm.Prediction.bucket_ts,
+                         func.avg(col).label("avg"), func.max(col).label("mx"),
+                         func.count(dbm.Prediction.id).label("cnt"))
+                .filter(dbm.Prediction.task == task, dbm.current_only(),
+                        dbm.Prediction.bucket_ts >= lo, dbm.Prediction.bucket_ts <= hi)
+                .group_by(dbm.Prediction.bucket_ts)
+                .order_by(dbm.Prediction.bucket_ts.asc()).all())
+        res = {"task": task, "measure": measure, "measure_ru": MEASURES[measure],
+               "rows": [{"bucket_ts": r[0].isoformat(),
+                         "avg_risk": round(float(r[1]), 4) if r[1] is not None else None,
+                         "max_risk": round(float(r[2]), 4) if r[2] is not None else None,
+                         "n": int(r[3])} for r in rows[-n:]]}
+    res["rows"] = _mark_and_smooth(res["rows"], smooth=smooth, min_n=min_n)
+    res["smooth"] = smooth
+    res["min_n"] = min_n
+    res["total"] = len(res["rows"])
+    res["n_valid"] = sum(1 for r in res["rows"] if not r["low_n"])
+    return res
 
 
 def _history_p7d(db: Session, task: str, n: int, lo=None, hi=None) -> dict:

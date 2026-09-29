@@ -48,7 +48,13 @@ window.Charts = (() => {
       body.appendChild(el(UI.emptyState("история накапливается: сим-время идёт шагами по 6 ч — кривая растёт в реальном времени", "clock")));
       return host;
     }
-    const avg = rows.map(r => r.avg_risk || 0), mx = rows.map(r => r.max_risk || 0);
+    /* линия «средний» рисуется по сглаженному среднему, если оно есть: сырые бакеты
+       несопоставимы (в бакете от 16 до 1146 активных каналов) */
+    const sm = rows.some(r => r.avg_risk_smooth !== undefined
+      && r.avg_risk_smooth !== null && r.avg_risk_smooth !== r.avg_risk);
+    const avg = rows.map(r => (r.avg_risk_smooth !== undefined && r.avg_risk_smooth !== null)
+      ? r.avg_risk_smooth : (r.avg_risk || 0));
+    const mx = rows.map(r => r.max_risk || 0);
     /* шкала по максимуму показываемых линий, «круглыми» делениями и никогда выше 100% */
     const peak = Math.max(0.02, ...(showMax ? mx : avg));
     const NICE = [0.05, 0.1, 0.2, 0.25, 0.5, 1];
@@ -99,15 +105,17 @@ window.Charts = (() => {
       cs[0].setAttribute("cx", X(i)); cs[0].setAttribute("cy", Y(avg[i]));
       cs[1].setAttribute("cx", X(i)); cs[1].setAttribute("cy", Y(mx[i]));
       const rr = rows[i];
+      const raw = rr.avg_risk_raw !== undefined ? rr.avg_risk_raw : rr.avg_risk;
       tip(`<div class="faint">${esc(rr.bucket_ts.slice(0, 16).replace("T", " "))}</div>
-        <div><span class="sw" style="background:var(--accent-2)"></span>средний <b>${fmt(rr.avg_risk, 3)}</b></div>
+        <div><span class="sw" style="background:var(--accent-2)"></span>средний <b>${fmt(avg[i], 3)}</b>${
+          sm && raw !== avg[i] ? ` <span class="faint">(в этом бакете ${fmt(raw, 3)})</span>` : ""}</div>
         <div><span class="sw" style="background:var(--bad)"></span>максимум <b>${fmt(rr.max_risk, 3)}</b></div>
-        <div class="faint">каналов: ${rr.n}</div>`, r.left + X(i) * r.width / w, r.top + Y(avg[i]) * r.height / h);
+        <div class="faint">каналов в бакете: ${rr.n}${rr.low_n ? " — мало, точка ненадёжна" : ""}</div>`, r.left + X(i) * r.width / w, r.top + Y(avg[i]) * r.height / h);
     });
     hit.addEventListener("mouseleave", () => { xh.style.opacity = 0; tip(null); });
     drawLines(svg);
     body.appendChild(el(`<div class="glegend" style="margin-top:8px">
-      <span><i style="background:var(--accent-2)"></i>средний по каналам</span>
+      <span><i style="background:var(--accent-2)"></i>средний${sm ? " (сглажено)" : " по каналам"}</span>
       ${showMax ? '<span><i style="background:var(--bad)"></i>максимум</span>' : ""}
       <span class="faint">сейчас: ${fmt(avg[avg.length - 1], 3)}${showMax ? ` · макс ${fmt(mx[mx.length - 1], 3)}` : ""}
         · ${rows.length} бакетов · наведите для деталей</span></div>`));

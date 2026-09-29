@@ -134,6 +134,18 @@ window.addEventListener("load", async () => {
     }, () => /риск 30 дней|точек пока/.test(
       (q("#trend-hint") || {}).textContent || ""));
 
+    await step("Пульт: тренд — переключатель сглаживания (6 ч → 24 ч)", async () => {
+      const btn = m => qa("#tsm button").find(b => b.dataset.v === m);
+      const hint = () => ((q("#trend-hint") || {}).textContent || "").replace(/\s+/g, " ").trim();
+      if (!btn("1") || !btn("4")) return "переключателя сглаживания нет (#tsm)";
+      click(btn("1"));                                   // «6 ч» — без сглаживания
+      await wait(() => /сглажено 6 ч/.test(hint()), 9000);
+      const h6 = hint();
+      click(btn("4"));                                   // «24 ч» — по умолчанию
+      await wait(() => /сглажено 24 ч/.test(hint()), 9000);
+      return `6 ч: «${h6.slice(0, 58)}» → 24 ч: «${hint().slice(0, 58)}»`;
+    }, () => /сглажено 24 ч/.test(((q("#trend-hint") || {}).textContent || "")));
+
     await step("Пульт: «максимум» переключает режим линий", async () => {
       const cb = q("#tmax"); cb.checked = !cb.checked; cb.dispatchEvent(new Event("change"));
       await sleep(1500);
