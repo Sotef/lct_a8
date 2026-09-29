@@ -21,6 +21,12 @@ import argparse
 import datetime as dt
 import ipaddress
 import pathlib
+import sys
+
+try:  # консоль Windows бывает cp1251 — не падаем на «→» и русском тексте
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:  # noqa: BLE001
+    pass
 
 HERE = pathlib.Path(__file__).resolve().parent
 DEFAULT_OUT = HERE.parent / "deploy" / "certs"
