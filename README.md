@@ -249,6 +249,11 @@ copy .env.docker.example .env        # bash: cp .env.docker.example .env
 docker compose up -d --build
 ```
 
+> Панели 6ч можно вообще не качать руками: в `services/.env` уже задан
+> `DEMO_DATA_HF=sotef/moscollector-2026-demo-data`, и контейнер при старте сам подтянет
+> недостающее с Hugging Face в `services/data/` (см. `services/README.md` → «Демо-данные 2026»).
+> Не нужно — `SKIP_DEMO_FETCH=1`.
+
 > Демо-данные 2026 (панели 6ч, raw-бакеты, модели, справочники) — в репозитории: мелкое —
 > обычными файлами, **6ч-панели — через Git LFS** (файл `sensor` >100 МБ GitHub иначе не примет).
 > Проверка/получение: `services/scripts/fetch_demo_data.py` (`--check`, `--url <архив релиза>`,

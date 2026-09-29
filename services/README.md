@@ -20,6 +20,10 @@ copy .env.docker.example .env        # bash: cp .env.docker.example .env
 docker compose up -d --build
 ```
 
+`.env.docker.example` уже содержит `DEMO_DATA_HF=sotef/moscollector-2026-demo-data`, поэтому
+панели 6ч (и прочие артефакты демо) контейнер дотянет сам при старте, если их нет локально
+(подробнее — «Демо-данные 2026» ниже). Отключить: `SKIP_DEMO_FETCH=1`.
+
 Готово, когда `docker compose ps` показывает `api ... (healthy)`:
 
 | Что | Адрес |
@@ -35,12 +39,14 @@ docker compose up -d --build
 `docker compose exec -T api python scripts/verify_deploy.py`.
 Остановить: `docker compose down`; «с нуля»: `docker compose down -v && docker compose up -d --build`.
 
-Из клона всё нужное для прогнозов уже есть (~33 МБ в git): модели
+Из клона всё нужное для прогнозов уже есть: модели
 (`research/models/tte_*_discrete_hazard.cbm`, `calib30_access.pkl`), справочники
-(`research/dataset/справочник_*.csv`) и raw-кэш (`services/data/raw/buckets_2026.parquet`).
-Панели 6ч в git не хранятся — они пересобираются из raw-кэша на первом запуске
-(`feature_pipeline.build_subjects`). Тяжёлые исходные журналы СМВУ (~16 ГБ) нужны только
-для `POST /admin/data/load` (загрузка новых данных) или переобучения.
+(`research/dataset/справочник_*.csv`), raw-кэш (`services/data/raw/buckets_2026.parquet`) и
+панели 6ч — последние лежат в **Git LFS** (`git lfs pull`, ~319 МБ). Если панели не пришли
+(или в файлах LFS-указатели — их видно как `[LFS]` в `fetch_demo_data.py --check`), контейнер
+при старте сам потянет архив с Hugging Face (переменная `DEMO_DATA_HF`), а если сети нет —
+панель пересоберётся из raw-кэша (`feature_pipeline.build_subjects`). Тяжёлые исходные журналы
+СМВУ (~16 ГБ) нужны только для `POST /admin/data/load` (загрузка новых данных) или переобучения.
 
 Полный разбор (переменные, тома, TLS, эксплуатация) — раздел
 [«Docker: развёртывание всего сервиса»](#docker-развёртывание-всего-сервиса-postgresql-12--api-spa--tls) ниже.
@@ -146,6 +152,14 @@ cd lct_a8; git lfs pull             # подтянуть панели 6ч (~319 
 Вместо флагов можно задать `DEMO_DATA_HF=<user>/<repo>` или `DEMO_DATA_URL=<URL архива>`
 (удобно для CI/Docker). Приватный HF-датасет анонимно не качается (401) — либо сделать
 датасет публичным, либо использовать `hf auth login && hf download <repo> --repo-type dataset`.
+
+**Docker: данные подтягиваются сами.** `api` получает `DEMO_DATA_HF` из `services/.env`; на старте
+entrypoint делает `fetch_demo_data.py --check`, и если чего-то не хватает — вызывает
+`fetch_demo_data.py --hf $DEMO_DATA_HF` и распаковывает архив в `/workspace` (том `./data`, так что
+файлы появляются у вас в `services/data/...`). Уже существующие файлы не перезаписываются, а
+`research/` смонтирован `:ro` — распаковка идемпотентна и безопасна на каждом запуске.
+Переменные: `DEMO_DATA_HF`, `DEMO_DATA_URL` (фолбэк-ссылка), `DEMO_DATA_SHA256`, `DEMO_DATA_TIMEOUT=60`,
+`SKIP_DEMO_FETCH=1` (не ходить в сеть). Смотреть: `docker compose logs api | Select-String entrypoint`.
 
 Если LFS недоступен — сервис соберёт панель из `services/data/raw/buckets_2026.parquet`
 при первом запуске (дольше): `scripts/run_demo.py --recompute-panel` или просто запуск.

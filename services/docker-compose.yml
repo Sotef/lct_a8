@@ -83,6 +83,14 @@ x-api-env: &api-env
   SKIP_SEED: ${SKIP_SEED:-0}
   RUN_MIGRATIONS: ${RUN_MIGRATIONS:-0}
   DB_WAIT_RETRIES: ${DB_WAIT_RETRIES:-45}
+  # --- Демо-данные 2026: авто-подтяг на старте (панели 6ч ~319 МБ) ---
+  # DEMO_DATA_HF=sotef/moscollector-2026-demo-data — скачивание с Hugging Face без токена
+  # (или DEMO_DATA_URL=<URL demo-data-2026.zip>, например GitHub Release asset)
+  DEMO_DATA_HF: ${DEMO_DATA_HF:-}
+  DEMO_DATA_URL: ${DEMO_DATA_URL:-}
+  DEMO_DATA_SHA256: ${DEMO_DATA_SHA256:-}
+  DEMO_DATA_TIMEOUT: ${DEMO_DATA_TIMEOUT:-60}
+  SKIP_DEMO_FETCH: ${SKIP_DEMO_FETCH:-0}
 
 services:
   postgres:

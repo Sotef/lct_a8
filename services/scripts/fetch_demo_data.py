@@ -95,12 +95,35 @@ def _hash(fp: pathlib.Path) -> str:
     return h.hexdigest()
 
 
+# Файл, не выкачанный из Git LFS, — это текстовый указатель (~130 Б), а не данные.
+LFS_POINTER_MAGIC = b"version https://git-lfs.github.com/spec/v1"
+
+
+def _size_ok(fp: pathlib.Path) -> int:
+    """Полезный размер файла: 0 — файла нет, он пустой или это LFS-указатель."""
+    try:
+        if not fp.exists():
+            return 0
+        size = fp.stat().st_size
+        if size == 0:
+            return 0
+        if size < 1024:
+            with fp.open("rb") as f:
+                if f.read(len(LFS_POINTER_MAGIC)) == LFS_POINTER_MAGIC:
+                    return 0
+        return size
+    except OSError:
+        return 0
+
+
+def _is_lfs_pointer(fp: pathlib.Path) -> bool:
+    return fp.exists() and fp.stat().st_size > 0 and _size_ok(fp) == 0
+
+
 def status() -> list[tuple[str, bool, str, int]]:
     out = []
     for rel, must, name in REQUIRED:
-        fp = ROOT / rel
-        size = fp.stat().st_size if fp.exists() else 0
-        out.append((rel, must, name, size))
+        out.append((rel, must, name, _size_ok(ROOT / rel)))
     return out
 
 
@@ -109,10 +132,18 @@ def cmd_check(verbose: bool = True) -> int:
     miss = [r for r in rows if r[1] and r[3] == 0]
     if verbose:
         print("Демо-данные 2026 (корень: %s)\n" % ROOT)
+        pointers = 0
         for rel, must, name, size in rows:
-            mark = "OK " if size else ("НЕТ" if must else "—  ")
+            ptr = _is_lfs_pointer(ROOT / rel)
+            pointers += 1 if ptr else 0
+            mark = "LFS" if ptr else ("OK " if size else ("НЕТ" if must else "—  "))
             print(f"  [{mark}] {name:34} {rel:58} {_mb(size) if size else ''}")
         print()
+        if pointers:
+            print("Файлов-указателей Git LFS: %d — содержимое не выкачано."
+                  % pointers)
+            print("  забрать: git lfs pull  (или: fetch_demo_data.py --hf <user>/<repo>)")
+            print()
         print("Не хватает обязательных: %d." % len(miss) if miss
               else "Все обязательные данные на месте — можно запускать демо.")
     return 1 if miss else 0
@@ -137,8 +168,7 @@ def git_has_remote() -> bool:
 
 
 def _panels_ok() -> bool:
-    return all((ROOT / r).exists() and (ROOT / r).stat().st_size > 0
-               for r, must, _n in REQUIRED if must and "/panels/" in r)
+    return all(_size_ok(ROOT / r) for r, must, _n in REQUIRED if must and "/panels/" in r)
 
 
 def pull_lfs() -> bool:
@@ -153,8 +183,12 @@ def pull_lfs() -> bool:
     return _panels_ok()
 
 
-def fetch_url(url: str, sha256: str | None = None) -> bool:
-    """Скачать архив демо-данных и распаковать в корень репозитория."""
+def fetch_url(url: str, sha256: str | None = None, overwrite: bool = False) -> bool:
+    """Скачать архив демо-данных и распаковать в корень репозитория.
+
+    overwrite=False — существующие непустые файлы не трогаем: распаковка идемпотентна
+    и безопасна для read-only томов (в Docker `research/` подключён как :ro).
+    """
     print("• скачивание архива: %s" % url)
     with tempfile.TemporaryDirectory(prefix="mc_demo_") as td:
         tmp = pathlib.Path(td) / ARCHIVE_NAME
@@ -168,6 +202,7 @@ def fetch_url(url: str, sha256: str | None = None) -> bool:
             return False
         print("  распаковка %s ..." % _mb(tmp.stat().st_size))
         root = ROOT.resolve()
+        written = skipped = failed = 0
         with zipfile.ZipFile(tmp) as z:
             for m in z.namelist():
                 target = (ROOT / m).resolve()
@@ -175,11 +210,27 @@ def fetch_url(url: str, sha256: str | None = None) -> bool:
                     print("  пропуск подозрительного пути: %s" % m)
                     continue
                 if m.endswith("/"):
-                    target.mkdir(parents=True, exist_ok=True)
+                    try:
+                        target.mkdir(parents=True, exist_ok=True)
+                    except OSError as exc:
+                        failed += 1
+                        print("  не удалось создать %s: %s" % (m, exc))
                     continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with z.open(m) as src, target.open("wb") as dst:
-                    shutil.copyfileobj(src, dst)
+                if not overwrite and _size_ok(target):      # уже есть (не LFS-указатель)
+                    skipped += 1
+                    continue
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with z.open(m) as src, target.open("wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    written += 1
+                except OSError as exc:                          # напр. read-only том
+                    failed += 1
+                    print("  не удалось записать %s: %s" % (m, exc))
+        print("  записано: %d, пропущено (уже есть): %d, ошибок записи: %d"
+              % (written, skipped, failed))
+        if failed and not written and skipped == 0:
+            return False
     return True
 
 
@@ -216,14 +267,24 @@ HF_RESOLVE = "https://huggingface.co/datasets/{repo}/resolve/main/{path}"
 HF_TIMEOUT = 90
 
 
+def net_timeout() -> float:
+    """Таймаут сетевых операций: $DEMO_DATA_TIMEOUT, иначе HF_TIMEOUT."""
+    try:
+        v = float(os.getenv("DEMO_DATA_TIMEOUT") or HF_TIMEOUT)
+    except ValueError:
+        v = HF_TIMEOUT
+    return v if v > 0 else HF_TIMEOUT
+
+
 def hf_url(repo: str, path: str) -> str:
     return HF_RESOLVE.format(repo=repo.strip("/"),
                              path=urllib.parse.quote(path, safe="/"))
 
 
-def _download(url: str, target: pathlib.Path, timeout: int = HF_TIMEOUT) -> None:
+def _download(url: str, target: pathlib.Path, timeout: float | None = None) -> None:
     req = urllib.request.Request(url, headers={"User-Agent": "moscollector-demo-fetch"})
-    with urllib.request.urlopen(req, timeout=timeout) as r, target.open("wb") as f:
+    with urllib.request.urlopen(req, timeout=timeout or net_timeout()) as r, \
+            target.open("wb") as f:
         shutil.copyfileobj(r, f, length=1024 * 1024)
 
 
@@ -238,24 +299,29 @@ def hf_hint(repo: str) -> None:
     print("  • или выгрузите архив в GitHub Release и скачайте через --url")
 
 
-def hf_download(repo: str, files: bool = False, sha256: str | None = None) -> bool:
+def hf_download(repo: str, files: bool = False, sha256: str | None = None,
+                overwrite: bool = False) -> bool:
     """Скачать demo-data-2026.zip из HF-datasets или (files=True) — файлы по отдельности."""
     if not files:
-        ok = fetch_url(hf_url(repo, ARCHIVE_NAME), sha256)
+        ok = fetch_url(hf_url(repo, ARCHIVE_NAME), sha256, overwrite=overwrite)
         if not ok:
             hf_hint(repo)
         return ok
     got = 0
     for rel, _must, name in REQUIRED:
         target = ROOT / rel
-        if target.exists() and target.stat().st_size:
+        if not overwrite and _size_ok(target):
             continue
         print("• %s (%s)" % (rel, name))
+        part = target.with_name(target.name + ".part")
         try:
-            _download(hf_url(repo, rel), target)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _download(hf_url(repo, rel), part)
+            part.replace(target)                      # атомарно, без огрызков
             got += 1
         except Exception as exc:  # noqa: BLE001
             print("  ошибка: %s" % exc)
+            part.unlink(missing_ok=True)
     print("скачано файлов: %d" % got)
     return got > 0
 
@@ -333,14 +399,22 @@ def main() -> int:
     ap.add_argument("--hf-upload", default=None, metavar="USER/REPO",
                     help="загрузить demo-data-2026.zip в HF datasets (нужен hf CLI + токен)")
     ap.add_argument("--sha256", default=None, help="ожидаемая контрольная сумма архива")
+    ap.add_argument("--force", action="store_true",
+                    help="перезаписать существующие файлы при распаковке/скачивании")
+    ap.add_argument("--timeout", type=float, default=None,
+                    help="таймаут сети, с (по умолчанию $DEMO_DATA_TIMEOUT или 90)")
     ap.add_argument("--pack", action="store_true", help="собрать архив для публикации")
     ap.add_argument("--out", default=str(SERVICE / "data" / ARCHIVE_NAME),
                     help="путь архива для --pack / --hf-upload")
     args = ap.parse_args()
 
+    if args.timeout:
+        os.environ["DEMO_DATA_TIMEOUT"] = str(args.timeout)
+
     # переменные окружения как значения по умолчанию (удобно в CI/Docker)
     url = args.url or os.getenv("DEMO_DATA_URL") or None
     hf = args.hf or os.getenv("DEMO_DATA_HF") or None
+    sha = args.sha256 or os.getenv("DEMO_DATA_SHA256") or None
 
     if args.check:
         return cmd_check(verbose=True)
@@ -349,10 +423,10 @@ def main() -> int:
     if args.hf_upload:
         return hf_upload(args.hf_upload, pathlib.Path(args.out))
     if hf:
-        ok = hf_download(hf, files=args.hf_files, sha256=args.sha256)
+        ok = hf_download(hf, files=args.hf_files, sha256=sha, overwrite=args.force)
         return 0 if (ok and cmd_check(verbose=False) == 0) else 1
     if url:
-        ok = fetch_url(url, args.sha256)
+        ok = fetch_url(url, sha, overwrite=args.force)
         return 0 if (ok and cmd_check(verbose=False) == 0) else 1
     return cmd_default(url)
 
