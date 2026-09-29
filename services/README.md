@@ -30,7 +30,7 @@ docker compose up -d --build
 |---|---|
 | SPA (диспетчер/техник) | http://127.0.0.1:8000/ |
 | Swagger | http://127.0.0.1:8000/docs |
-| HTTPS (профиль `tls`, TLS 1.2+) | https://127.0.0.1:8443/ — сначала сертификаты: `.\.venv\Scripts\python.exe scripts\make_dev_certs.py` (либо положить корпоративные `tls.crt`/`tls.key` в `deploy/certs`, см. `deploy/certs/README.md`) |
+| HTTPS (профиль `tls`, TLS 1.2+) | https://127.0.0.1:8443/ — сначала сертификаты: `docker compose exec -T api python scripts/make_dev_certs.py` (или с хоста `.\.venv\Scripts\python.exe scripts/make_dev_certs.py`; подробнее — `deploy/certs/README.md`) |
 
 Вход: `central.operator` / `central123` (центральный диспетчер),
 `dispatcher.alpha` / `alpha123`, `tech.alpha` / `tech123`.

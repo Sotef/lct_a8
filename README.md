@@ -270,7 +270,7 @@ docker compose up -d --build
 | SPA диспетчера/техника | **http://127.0.0.1:8000/** |
 | Swagger (OpenAPI) | **http://127.0.0.1:8000/docs** |
 | Проверка развёртывания | `docker compose exec -T api python scripts/verify_deploy.py` |
-| HTTPS (TLS 1.2+, требование ТЗ) | `python services/scripts/make_dev_certs.py` (сертификаты, если их нет — иначе `proxy` уйдёт в рестарт-луп) → `docker compose --profile tls up -d` → **https://127.0.0.1:8443/** |
+| HTTPS (TLS 1.2+, требование ТЗ) | сертификаты: `docker compose exec -T api python scripts/make_dev_certs.py` → `docker compose --profile tls up -d` → **https://127.0.0.1:8443/** (без них `proxy` уходит в рестарт-луп; подробно — `services/deploy/certs/README.md`) |
 | PostgreSQL | `127.0.0.1:5432` (только localhost; `POSTGRES_USER=moscollector`) |
 
 Что сервис делает при первом старте сам: при нехватке демо-данных скачивает их с Hugging Face

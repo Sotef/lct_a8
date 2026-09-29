@@ -133,6 +133,10 @@ services:
       - ./data:/workspace/services/data
       # Логи (JSON lines + ротация)
       - ./logs:/workspace/services/logs
+      # TLS-сертификаты (то, что видит контейнер proxy). Нужно, чтобы генератор
+      # `docker compose exec -T api python scripts/make_dev_certs.py` писал их на хост.
+      # Каталог в .gitignore (*.crt/*.key) — приватный ключ в репозиторий не попадает.
+      - ./deploy/certs:/workspace/services/deploy/certs
     depends_on:
       postgres:
         condition: service_healthy

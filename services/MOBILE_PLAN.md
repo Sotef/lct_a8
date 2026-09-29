@@ -655,6 +655,7 @@ cd services
 copy .env.docker.example .env        # bash: cp .env.docker.example .env
 docker compose up -d --build
 # SPA: http://127.0.0.1:8000/        HTTPS (профиль tls): https://127.0.0.1:8443/
+# сертификаты для профиля tls: docker compose exec -T api python scripts/make_dev_certs.py
 docker compose exec -T api python scripts/verify_deploy.py    # проверка API + PWA-раздачи
 ```
 

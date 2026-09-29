@@ -11,12 +11,25 @@ deploy/certs/tls.key   # приватный ключ (без пароля)
 
 ## Вариант 0. Одной командой (самоподписанный, для демо/теста)
 
+**Если есть локальный venv (Windows):**
 ```powershell
 cd services
 .\.venv\Scripts\python.exe scripts\make_dev_certs.py     # создаст tls.crt + tls.key на 365 дней
 docker compose --profile tls up -d
 # https://127.0.0.1:8443/  (браузер покажет предупреждение о самоподписанном сертификате)
 ```
+
+**Только через Docker (venv не нужен)** — каталог `deploy/certs` смонтирован в `api`:
+```powershell
+cd services
+docker compose up -d --build                                          # api уже поднят
+docker compose exec -T api python scripts/make_dev_certs.py           # пишет прямо на хост в deploy/certs
+docker compose --profile tls up -d                                    # поднять proxy
+```
+
+> ⚠️ Запускать генератор нужно с хоста (через venv) или через `docker compose exec` — если запустить
+> `python scripts/make_dev_certs.py` **внутри** контейнера вручную (`docker exec ... sh`), файлы
+> попадут в контейнер и `proxy` их не увидит (он монтирует `./deploy/certs` с хоста).
 
 Скрипту нужен только пакет `cryptography` (приходит с `python-jose[cryptography]`), `openssl` не требуется.
 Существующие сертификаты не перезаписываются (`--force`), срок — `--days`, каталог — `--out`.
