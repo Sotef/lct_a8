@@ -22,7 +22,6 @@ Views.dashboard = (() => {
       grab(`/top-risks?task=${task}&k=14&horizon=${horizon}`, { items: [] }),
       topMode === "objects" ? grab(`/top-objects?task=${task}&k=8&horizon=${horizon}`, { items: [] }) : { items: [] },
     ]);
-    const hist = await grab(`/meta/risk-history?task=${task}&n=120`, { rows: [] });
     const hz = HZ[horizon];
 
     F.appendChild(renderHead(main, state, task));
@@ -193,6 +192,7 @@ Views.dashboard = (() => {
       const thin = (d.total || rows.length) - (d.n_valid === undefined ? rows.length : d.n_valid);
       const hint = rows.length >= 2
         ? `${d.measure_ru || ""} · сглажено ${smRu} · ${rows.length} точек`
+          + ` · по постоянным каналам${d.cohort_n ? ` (когорта ${d.cohort_n})` : ""}`
           + ` · каналов в бакете ${ns.length ? Math.min(...ns) + "…" + Math.max(...ns) : "—"}`
           + (thin > 0 ? ` · тонких бакетов (n<${MIN_N}): ${thin}` : "")
         : `точек пока ${rows.length} — история накапливается по 6ч-бакету за тик (сим-время ${simNow}${nextTick}). `

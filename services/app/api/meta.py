@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func
+from sqlalchemy import case, distinct, func, select
 from sqlalchemy.orm import Session
 
 from .. import models_db as dbm
@@ -113,39 +113,29 @@ def risk_history(task: str = Query(...), n: int = Query(40, ge=1, le=300),
                                      description="сглаживание среднего: окно в 6ч-бакетах"),
                  min_n: int = Query(0, ge=0, le=100000,
                                     description="бакеты с меньшим числом каналов помечаются low_n"),
+                 cohort_share: float = Query(0.5, ge=0.0, le=1.0,
+                                             description="«постоянная когорта»: каналы, "
+                                                         "встречающиеся не реже этой доли бакетов"),
                  db: Session = Depends(get_db),
                  user: dbm.User = Depends(require_roles("dispatcher", "central", "tech"))):
     """Агрегат риска по бакетам (тренд для дашборда).
 
     measure: risk30 (по умолчанию) | p24 (1 день) | p72 (3 дня) | p7d (7 дней из S(t)).
-    В каждой строке: `avg_risk` (средний по активным каналам), `avg_risk_raw`,
-    `avg_risk_smooth` (сглаженное среднее), `max_risk`, `n` (каналов в бакете), `low_n`
-    (мало каналов — точка ненадёжная). Сканируются только последние n бакетов
-    (см. _hist_window) — ответ быстрый и не «догоняет» пользователя при длинном реплее.
+    В каждой строке: `avg_risk` (средний по «постоянной когорте» каналов — сопоставимая
+    между бакетами величина, см. _history_cohort), `avg_risk_all` (средний по всем каналам
+    бакета), `avg_risk_raw`, `avg_risk_smooth` (сглаженное среднее), `max_risk`,
+    `n` (каналов в бакете), `cohort_n` (каналов в когорте), `low_n` (мало каналов —
+    точка ненадёжная). Сканируются только последние n бакетов (см. _hist_window) —
+    ответ быстрый и не «догоняет» пользователя при длинном реплее.
     """
     if task not in task_cfg.ALL_TASKS:
         raise HTTPException(status_code=400, detail="неизвестная задача")
     lo, hi = _hist_window(db, task, n)
     if lo is None:
         return {"task": task, "measure": measure, "measure_ru": MEASURES[measure],
-                "smooth": smooth, "min_n": min_n, "n_valid": 0, "rows": []}
-    if measure == "p7d":
-        res = _history_p7d(db, task, n, lo, hi)
-    else:
-        col = {"p24": dbm.Prediction.p24, "p72": dbm.Prediction.p72}.get(
-            measure, dbm.Prediction.risk30)
-        rows = (db.query(dbm.Prediction.bucket_ts,
-                         func.avg(col).label("avg"), func.max(col).label("mx"),
-                         func.count(dbm.Prediction.id).label("cnt"))
-                .filter(dbm.Prediction.task == task, dbm.current_only(),
-                        dbm.Prediction.bucket_ts >= lo, dbm.Prediction.bucket_ts <= hi)
-                .group_by(dbm.Prediction.bucket_ts)
-                .order_by(dbm.Prediction.bucket_ts.asc()).all())
-        res = {"task": task, "measure": measure, "measure_ru": MEASURES[measure],
-               "rows": [{"bucket_ts": r[0].isoformat(),
-                         "avg_risk": round(float(r[1]), 4) if r[1] is not None else None,
-                         "max_risk": round(float(r[2]), 4) if r[2] is not None else None,
-                         "n": int(r[3])} for r in rows[-n:]]}
+                "smooth": smooth, "min_n": min_n, "cohort_share": cohort_share,
+                "cohort_n": 0, "total": 0, "n_valid": 0, "rows": []}
+    res = _history_cohort(db, task, measure, n, lo, hi, cohort_share)
     res["rows"] = _mark_and_smooth(res["rows"], smooth=smooth, min_n=min_n)
     res["smooth"] = smooth
     res["min_n"] = min_n
@@ -154,24 +144,63 @@ def risk_history(task: str = Query(...), n: int = Query(40, ge=1, le=300),
     return res
 
 
-def _history_p7d(db: Session, task: str, n: int, lo=None, hi=None) -> dict:
-    """P(≤7 дней) по бакетам — колонка predictions.p7d (считается на тике)."""
-    q = (db.query(dbm.Prediction.bucket_ts,
-                  func.avg(dbm.Prediction.p7d).label("avg"),
-                  func.max(dbm.Prediction.p7d).label("mx"),
-                  func.count(dbm.Prediction.id).label("cnt"))
-         .filter(dbm.Prediction.task == task, dbm.Prediction.p7d.isnot(None),
-                 dbm.current_only()))
-    if lo is not None:
-        q = q.filter(dbm.Prediction.bucket_ts >= lo)
-    if hi is not None:
-        q = q.filter(dbm.Prediction.bucket_ts <= hi)
-    rows = (q.group_by(dbm.Prediction.bucket_ts)
-            .order_by(dbm.Prediction.bucket_ts.asc()).all())
-    out = [{"bucket_ts": r[0].isoformat(),
-            "avg_risk": round(float(r[1]), 4), "max_risk": round(float(r[2]), 4),
-            "n": int(r[3])} for r in rows[-n:]]
-    return {"task": task, "measure": "p7d", "measure_ru": MEASURES["p7d"], "rows": out}
+# меры тренда -> колонка Prediction (строгий whitelist, без интерполяции в SQL)
+_HIST_COLS = {"risk30": dbm.Prediction.risk30, "p24": dbm.Prediction.p24,
+              "p72": dbm.Prediction.p72, "p7d": dbm.Prediction.p7d}
+_COHORT_MIN = 5          # когорта из <5 каналов неустойчива — берём среднее по всем
+
+
+def _history_cohort(db: Session, task: str, measure: str, n: int, lo, hi,
+                    cohort_share: float = 0.5) -> dict:
+    """Средний риск по бакетам, нормированный на «постоянную когорту» каналов.
+
+    Почему так: число каналов в бакете скачет (в демо 16…1146), причём канал, впервые
+    появившийся в бакете, получает risk30 ≈ 1.0 («холодный старт»). Среднее «по всем»
+    поэтому «пилит» (wear: 0.05 ↔ 0.80) и на каждом тике график выглядит новым.
+    Линия тренда считается только по каналам, которые есть в бакете И встречаются не
+    реже `cohort_share` бакетов окна — их состав сопоставим между бакетами. Среднее по
+    всем каналам остаётся в ответе как `avg_risk_all` (для тултипа/подписи).
+
+    Собирается типизированным SQLAlchemy Core (CTE) — одинаково работает на SQLite и
+    PostgreSQL 12+; «сырой» `text()` тут не годится, т.к. не типизирует границы дат.
+    """
+    P = dbm.Prediction
+    col = _HIST_COLS[measure]
+    share = max(0.0, min(1.0, float(cohort_share)))
+    win = (select(P.bucket_ts.label("bucket_ts"), P.channel_id.label("channel_id"),
+                  col.label("v"))
+           .where(P.task == task, dbm.current_only(), col.isnot(None),
+                  P.bucket_ts >= lo, P.bucket_ts <= hi)
+           .cte("win"))
+    nb = select(func.count(distinct(win.c.bucket_ts))).scalar_subquery()
+    pres = (select(win.c.channel_id.label("channel_id"), func.count().label("c"))
+            .group_by(win.c.channel_id).cte("pres"))
+    coh = select(pres.c.channel_id).where(pres.c.c >= share * nb).cte("coh")
+    coh_ids = select(coh.c.channel_id)
+    agg = (select(win.c.bucket_ts,
+                  func.avg(win.c.v).label("avg_all"),
+                  func.max(win.c.v).label("mx"),
+                  func.count().label("n"),
+                  func.avg(case((win.c.channel_id.in_(coh_ids), win.c.v))).label("avg_coh"),
+                  func.sum(case((win.c.channel_id.in_(coh_ids), 1), else_=0)).label("n_coh"))
+           .group_by(win.c.bucket_ts)
+           .order_by(win.c.bucket_ts.asc()))
+    rows = db.execute(agg).all()
+    out, coh_max = [], 0
+    for bucket_ts, avg_all, mx, cnt, avg_coh, n_coh in rows:
+        n_coh = int(n_coh or 0)
+        coh_max = max(coh_max, n_coh)
+        use_coh = avg_coh is not None and n_coh >= _COHORT_MIN
+        out.append({
+            "bucket_ts": bucket_ts.isoformat(),
+            "avg_risk": round(float(avg_coh if use_coh else avg_all), 4),
+            "avg_risk_all": round(float(avg_all), 4) if avg_all is not None else None,
+            "max_risk": round(float(mx), 4) if mx is not None else None,
+            "n": int(cnt),
+            "cohort_n": n_coh,
+        })
+    return {"task": task, "measure": measure, "measure_ru": MEASURES[measure],
+            "cohort_share": share, "cohort_n": coh_max, "rows": out[-n:]}
 
 
 @router.get("/meta/events")

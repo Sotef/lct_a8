@@ -106,16 +106,20 @@ window.Charts = (() => {
       cs[1].setAttribute("cx", X(i)); cs[1].setAttribute("cy", Y(mx[i]));
       const rr = rows[i];
       const raw = rr.avg_risk_raw !== undefined ? rr.avg_risk_raw : rr.avg_risk;
+      const allv = rr.avg_risk_all;
       tip(`<div class="faint">${esc(rr.bucket_ts.slice(0, 16).replace("T", " "))}</div>
-        <div><span class="sw" style="background:var(--accent-2)"></span>средний <b>${fmt(avg[i], 3)}</b>${
+        <div><span class="sw" style="background:var(--accent-2)"></span>средний по когорте <b>${fmt(avg[i], 3)}</b>${
           sm && raw !== avg[i] ? ` <span class="faint">(в этом бакете ${fmt(raw, 3)})</span>` : ""}</div>
+        ${allv !== undefined && allv !== null && Math.abs(allv - raw) > 1e-9
+          ? `<div class="faint">все каналы бакета: ${fmt(allv, 3)}</div>` : ""}
         <div><span class="sw" style="background:var(--bad)"></span>максимум <b>${fmt(rr.max_risk, 3)}</b></div>
-        <div class="faint">каналов в бакете: ${rr.n}${rr.low_n ? " — мало, точка ненадёжна" : ""}</div>`, r.left + X(i) * r.width / w, r.top + Y(avg[i]) * r.height / h);
+        <div class="faint">каналов в бакете: ${rr.n}${rr.cohort_n ? ` (когорта ${rr.cohort_n})` : ""}${
+          rr.low_n ? " — мало, точка ненадёжна" : ""}</div>`, r.left + X(i) * r.width / w, r.top + Y(avg[i]) * r.height / h);
     });
     hit.addEventListener("mouseleave", () => { xh.style.opacity = 0; tip(null); });
     drawLines(svg);
     body.appendChild(el(`<div class="glegend" style="margin-top:8px">
-      <span><i style="background:var(--accent-2)"></i>средний${sm ? " (сглажено)" : " по каналам"}</span>
+      <span><i style="background:var(--accent-2)"></i>средний по когорте${sm ? " (сглажено)" : ""}</span>
       ${showMax ? '<span><i style="background:var(--bad)"></i>максимум</span>' : ""}
       <span class="faint">сейчас: ${fmt(avg[avg.length - 1], 3)}${showMax ? ` · макс ${fmt(mx[mx.length - 1], 3)}` : ""}
         · ${rows.length} бакетов · наведите для деталей</span></div>`));

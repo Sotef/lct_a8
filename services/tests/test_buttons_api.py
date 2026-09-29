@@ -628,6 +628,56 @@ def test_ticket_by_id_endpoint(client):
                       headers=ht).status_code == 403
 
 
+# === 7b. Тренд: устойчивость среднего по «постоянной когорте» ======================
+def test_trend_cohort_ignores_cold_channels(client, monkeypatch):
+    """Регресс «график скачет на каждом тике».
+
+    Причина была не в отрисовке: в бакете скачет число каналов, причём канал, впервые
+    появившийся в бакете, получает risk30 ≈ 1.0 («холодный старт»). Поэтому среднее «по
+    всем» «пилит» и на каждом тике график выглядит новым. Линия тренда считается по
+    «постоянной когорте» — каналам, встречающимся в большинстве бакетов окна.
+    """
+    import datetime as _dt
+
+    from app.services import prediction_service as ps
+
+    base = _dt.datetime(2026, 1, 1)
+    db = dbmod.SessionLocal()
+    db.query(dbm.MaintenanceTask).update({"prediction_id": None})
+    db.query(dbm.Prediction).filter(dbm.Prediction.task == "wear").delete()   # изоляция
+    for i in range(10):                                  # 10 бакетов по 6 ч
+        ts = base + _dt.timedelta(hours=6 * i)
+        for j in range(8):                               # 8 «постоянных» каналов
+            db.add(dbm.Prediction(task="wear", channel_id=f"S{j}", object_id="OBJ1",
+                                  bucket_ts=ts, p24=0.05, risk30=0.1, event_flag=0,
+                                  obs_days=30.0, model_version="cohort"))
+    for j in range(20):                                  # 20 «холодных» — только в последнем
+        db.add(dbm.Prediction(task="wear", channel_id=f"C{j}", object_id="OBJ1",
+                              bucket_ts=base + _dt.timedelta(hours=54), p24=0.9,
+                              risk30=1.0, event_flag=1, obs_days=0.25,
+                              model_version="cohort"))
+    db.commit()
+    db.close()
+
+    monkeypatch.setattr(ps, "_sim_bucket_dt", lambda: base + _dt.timedelta(hours=54))
+    res = act("risk-history: когорта", lambda: client.get(
+        B + "/meta/risk-history?task=wear&n=120&measure=risk30&cohort_share=0.5",
+        headers=tok(client, "disp.t"))).json()
+
+    assert len(res["rows"]) == 10, res["rows"]
+    assert res["cohort_share"] == 0.5 and res["cohort_n"] == 8, res
+    last = res["rows"][-1]
+    assert last["n"] == 28 and last["cohort_n"] == 8, last
+    assert abs(last["avg_risk"] - 0.1) < 0.01, last      # «холодные» исключены когортой
+    assert last["avg_risk_all"] > 0.6, last              # «по всем» — задран холодными
+    assert last["avg_risk_raw"] == last["avg_risk"]      # сырое = когортное (smooth=1)
+    # без когорты сырое среднее скачет >0.5; с когортой — ровно
+    alls = [r["avg_risk_all"] for r in res["rows"]]
+    cohs = [r["avg_risk"] for r in res["rows"]]
+    assert max(alls) - min(alls) > 0.5, alls
+    assert max(cohs) - min(cohs) < 1e-6, cohs
+
+
 # === 8. Отчёт по времени операций ================================================
 def test_report_timings(client):
     lines = ["| операция | время, мс | ok |", "|---|---|---|"]

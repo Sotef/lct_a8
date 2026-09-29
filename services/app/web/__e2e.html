@@ -144,7 +144,8 @@ window.addEventListener("load", async () => {
       click(btn("4"));                                   // «24 ч» — по умолчанию
       await wait(() => /сглажено 24 ч/.test(hint()), 9000);
       return `6 ч: «${h6.slice(0, 58)}» → 24 ч: «${hint().slice(0, 58)}»`;
-    }, () => /сглажено 24 ч/.test(((q("#trend-hint") || {}).textContent || "")));
+    }, () => /сглажено 24 ч/.test(((q("#trend-hint") || {}).textContent || ""))
+      && /постоянным каналам/.test(((q("#trend-hint") || {}).textContent || "")));
 
     await step("Пульт: «максимум» переключает режим линий", async () => {
       const cb = q("#tmax"); cb.checked = !cb.checked; cb.dispatchEvent(new Event("change"));
