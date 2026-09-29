@@ -17,7 +17,9 @@ def _p(key: str, default: str) -> pathlib.Path:
 
 
 # --- Пути данных -------------------------------------------------------------
-RESEARCH_DIR = _p("RESEARCH_DIR", r"d:\Downloads_D\lct_a8\research")
+# Пути данных: по умолчанию research лежит рядом с services/ (портативно — от расположения репо),
+# переменная RESEARCH_DIR нужна только если research вынесен в другое место
+RESEARCH_DIR = _p("RESEARCH_DIR", str(SERVICES_DIR.parent / "research"))
 DATASET_DIR = _p("DATASET_DIR", str(RESEARCH_DIR / "dataset"))
 EXTRACTED_DIR = _p("EXTRACTED_DIR", str(DATASET_DIR / "extracted"))
 MODELS_DIR = _p("MODELS_DIR", str(RESEARCH_DIR / "models"))

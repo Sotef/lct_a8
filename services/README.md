@@ -558,7 +558,7 @@ Docker Desktop живёт в WSL2 и по умолчанию может заня
 ```powershell
 cd services
 # 1) отдельная тестовая БД (не трогает демо data/app.db) + схема, демо-пользователи, справочники
-$env:DATABASE_URL='sqlite:///d:/Downloads_D/lct_a8/services/data/local_test.db'
+$env:DATABASE_URL='sqlite:///./data/local_test.db'   # относительно каталога запуска (services/)
 .\.venv\Scripts\python.exe scripts\seed.py
 
 # 2) локальный сервер: сим-часы, тик 20 с, без SHAP (быстро и легко)

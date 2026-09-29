@@ -11,7 +11,8 @@
 - Python 3.12, FastAPI, Uvicorn, Pydantic v2, SQLAlchemy 2 + Alembic, PostgreSQL 12+,
   asyncpg; auth: JWT (python-jose) + RBAC; CDN: файловая система (models/parquet).
 - venv: `services/.venv` (requirements в `services/requirements.txt`).
-- Research-модули подключаются через путь: `sys.path.insert(0, r"d:\Downloads_D\lct_a8\research")`.
+- Research-модули подключаются через путь: `sys.path.insert(0, "<repo>/research")`
+  (по умолчанию каталог `research` рядом с `services/`; путь можно задать `RESEARCH_DIR`).
 
 ## 1. Поток данных (общая картина)
 

@@ -11,8 +11,8 @@
     ид_канала_данных, first_bucket, first_ts
 где first_ts = 1970-01-01 + 6ч * first_bucket (та же 6ч-сетка, что в сервисе).
 
-Запуск (research-venv, pandas/pyarrow):
-    d:\\Downloads_D\\lct_a8\\research\\.venv\\Scripts\\python.exe services\\scripts\\build_channel_meta.py
+Запуск (research-venv с pandas/pyarrow; из корня репозитория):
+    <research-venv>/Scripts/python.exe services/scripts/build_channel_meta.py
 """
 from __future__ import annotations
 
