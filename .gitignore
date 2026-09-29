@@ -41,9 +41,10 @@ research/models/*
 # CatBoost training telemetry (auto-generated, regenerable)
 catboost_info/
 
-# Services: runtime-heavy кэши в git не кладём (панели ~319 МБ, SQLite ~8 ГБ),
-# НО raw-кэш 2026 (1.1 МБ) коммитим: панель 6ч пересобирается из него на первом запуске
-services/data/panels/
+# Services: runtime-heavy кэш в git не кладём (SQLite ~8 ГБ),
+# НО данные демо-прогона 2026 коммитим: raw-бакеты (1.1 МБ) — обычным blob,
+# 6ч-панели (~319 МБ) — через Git LFS (см. .gitattributes); если LFS недоступен,
+# панель пересобирается из raw на первом запуске (services/scripts/fetch_demo_data.py).
 services/data/*.db
 services/data/raw/
 !services/data/raw/

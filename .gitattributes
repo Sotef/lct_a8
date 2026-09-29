@@ -1,0 +1,8 @@
+# --- Git LFS: данные демо-прогона 2026 ---
+# 6ч-панели «канал × бакет» (~319 МБ; один файл > 100 МБ — обычным blob GitHub не примет).
+# Хранятся в Git LFS: после clone нужен `git lfs pull` (или `scripts/fetch_demo_data.py`).
+services/data/panels/*.csv filter=lfs diff=lfs merge=lfs -text
+
+# Обученные модели — небольшие (≈38 МБ суммарно), храним обычными файлами.
+# (Если позже понадобится LFS и для них — добавить строку:
+#  research/models/*.cbm filter=lfs diff=lfs merge=lfs -text)
