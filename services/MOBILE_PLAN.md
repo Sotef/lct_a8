@@ -658,6 +658,10 @@ docker compose up -d --build
 docker compose exec -T api python scripts/verify_deploy.py    # проверка API + PWA-раздачи
 ```
 
+> Демо-данные качать не нужно: `.env.docker.example` содержит `DEMO_DATA_HF=sotef/lct`, и
+> контейнер при первом старте сам добирает 6ч-панели/артефакты с Hugging Face (лог —
+> `[entrypoint] демо-данные неполные — получаю: ...`; отключить — `SKIP_DEMO_FETCH=1`).
+
 ### Тест на реальном телефоне
 
 1. `ipconfig` → IP компьютера, на котором запущен Docker; телефон — в той же Wi-Fi/сети.

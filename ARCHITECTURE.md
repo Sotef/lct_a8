@@ -188,6 +188,12 @@ docker compose exec -T api python scripts/verify_deploy.py   # проверка 
 `dispatcher.beta/beta123`, `tech.alpha/tech123`. Остановить — `docker compose down`
 (данные БД сохраняются; `docker compose down -v` — сброс демо).
 
+> Демо-данные (6ч-панели ~319 МБ и артефакты) контейнер скачает сам при первом старте:
+> в `.env.docker.example` задан `DEMO_DATA_HF=sotef/lct`, entrypoint делает
+> `fetch_demo_data.py --check` → при нехватке `--hf sotef/lct` (без токена) и распаковывает
+> в `services/data/`, не перезаписывая существующее. `git lfs pull` нужен только для
+> локального запуска без Docker; отключить сеть на старте — `SKIP_DEMO_FETCH=1`.
+
 ### Тест на мобильных (телефон/планшет)
 
 1. В той же сети откройте на телефоне `http://<IP компьютера>:8000` — адаптивный UI

@@ -150,13 +150,14 @@
 | `services/data/raw/buckets_2026.parquet` | сырой 6ч-кэш 2026: из него на первом запуске собираются панели |
 | `services/data/z_stats_*.csv`, `_features_schema.json`, `cat_codes_*.json`, `l2_object_risk.parquet` | train-статистики z, схема признаков, коды категорий, L2-риски |
 
-**В Git LFS (~319 МБ):** панели `services/data/panels/*.csv` (6ч-панели четырёх задач) —
-`git lfs pull`, либо `services/scripts/fetch_demo_data.py --hf <user>/<repo>` /
-`--url <архив demo-data-2026.zip>` / `--hf-files`.
+**6ч-панели (≈319 МБ) — в Git LFS** и продублированы в публичном датасете Hugging Face `sotef/lct`.
+Забрать их можно любым способом: `git lfs pull`, `services/scripts/fetch_demo_data.py --hf sotef/lct`
+(режим файлов — `--hf-files`, архив — `--url <demo-data-2026.zip>`), а в Docker вообще ничего делать
+не нужно — контейнер скачает их сам при первом старте (см. [§6](#6-быстрый-деплой)).
 
 **Не в git** (и для демо не требуется): исходные журналы `ext-journal-*.csv` (нужны для загрузки новых
-данных и переобучения), БД, логи, TLS-ключи. Если панели не пришли — сервис пересобирает их из raw-кэша
-`services/data/raw/buckets_2026.parquet` при первом запуске.
+данных и переобучения), БД, логи, TLS-ключи. Если панели не пришли и сети нет — сервис пересобирает их
+из raw-кэша `services/data/raw/buckets_2026.parquet` при первом запуске (дольше).
 
 ---
 
@@ -235,30 +236,32 @@ exp_days = Σ S(t) / 4        E[время до события] в днях (RMS
 
 ## 6. Быстрый деплой
 
-### Вариант A — Docker (рекомендуется, 3 команды)
+### Вариант A — Docker (рекомендуется, 4 команды)
 
 Нужен только **Docker Desktop** (Windows/macOS) или Docker Engine + Compose (Linux).
-Python, venv, PostgreSQL и модели ставить не требуется — они уже в репозитории.
+Python, venv, PostgreSQL, модели и демо-данные ставить/качать не требуется: код и артефакты —
+в репозитории, а 6ч-панели контейнер скачает сам при первом старте.
 
 ```powershell
-git lfs install                      # один раз: панели 6ч (~319 МБ) хранятся в Git LFS
 git clone https://github.com/Sotef/lct_a8.git
-cd lct_a8; git lfs pull              # подтянуть демо-данные 2026 (или: python services/scripts/fetch_demo_data.py)
-cd services
+cd lct_a8\services
 copy .env.docker.example .env        # bash: cp .env.docker.example .env
 docker compose up -d --build
 ```
 
-> Панели 6ч можно вообще не качать руками: в `services/.env` уже задан
-> `DEMO_DATA_HF=sotef/lct`, и контейнер при старте сам подтянет
-> недостающее с Hugging Face в `services/data/` (см. `services/README.md` → «Демо-данные 2026»).
-> Не нужно — `SKIP_DEMO_FETCH=1`.
+> **Демо-данные подтягиваются сами.** В `.env.docker.example` уже задан
+> `DEMO_DATA_HF=sotef/lct` (публичный датасет Hugging Face, скачивание без токена).
+> На старте entrypoint вызывает `fetch_demo_data.py --check`, и если чего-то не хватает —
+> в том числе если вы клонировали **без** `git lfs pull` (файлы-указатели LFS распознаются) —
+> скачивает `demo-data-2026.zip` и распаковывает в `services/data/`, не перезаписывая
+> существующее. Переменные: `SKIP_DEMO_FETCH=1` (не ходить в сеть), `DEMO_DATA_URL=<URL>`
+> (своя ссылка), `DEMO_DATA_TIMEOUT=60`. Логи: `docker compose logs api | Select-String entrypoint`.
 
-> Демо-данные 2026 (панели 6ч, raw-бакеты, модели, справочники) — в репозитории: мелкое —
-> обычными файлами, **6ч-панели — через Git LFS** (файл `sensor` >100 МБ GitHub иначе не примет).
-> Проверка/получение: `services/scripts/fetch_demo_data.py` (`--check`, `--url <архив релиза>`,
-> `--hf <user>/<repo>` для Hugging Face, `--pack`).
-> Если LFS недоступен — панель пересоберётся из `raw/buckets_2026.parquet` при первом запуске.
+> Нужны панели и на хосте (локальный запуск без Docker)? `git lfs install && git lfs pull`
+> либо `services/scripts/fetch_demo_data.py --hf sotef/lct`. Если данных нет вообще и сети
+> нет — панель соберётся из `data/raw/buckets_2026.parquet` при первом старте (дольше).
+> Полный разбор способов доставки (LFS / Hugging Face / Release) — `services/README.md`
+> → «Демо-данные 2026».
 
 Через 2–3 минуты после первой сборки:
 
@@ -270,10 +273,11 @@ docker compose up -d --build
 | HTTPS (TLS 1.2+, требование ТЗ) | `docker compose --profile tls up -d --build` → **https://127.0.0.1:8443/** (сертификаты в `services/deploy/certs`) |
 | PostgreSQL | `127.0.0.1:5432` (только localhost; `POSTGRES_USER=moscollector`) |
 
-Что сервис делает при первом старте сам: применяет схему БД (Alembic/SQLAlchemy), создаёт
+Что сервис делает при первом старте сам: при нехватке демо-данных скачивает их с Hugging Face
+(`DEMO_DATA_HF`, см. врезку выше), затем применяет схему БД (Alembic/SQLAlchemy), создаёт
 демо-пользователей и реестр моделей, загружает справочники объектов/каналов, собирает 6ч-панели
-из `data/raw/buckets_2026.parquet`, запускает сим-часы (`SIM_CLOCK=1`) — прогнозы, алерты и
-превентивные заявки появляются в интерфейсе по мере прокрута.
+из `data/raw/buckets_2026.parquet` (если панелей всё ещё нет), запускает сим-часы (`SIM_CLOCK=1`) —
+прогнозы, алерты и превентивные заявки появляются в интерфейсе по мере прокрута.
 
 **Демо-доступы**
 
@@ -298,9 +302,15 @@ docker compose down -v             # удалить тома (демо «с ну
 cd services
 copy .env.example .env                        # DATABASE_URL по умолчанию — SQLite
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe scripts\fetch_demo_data.py --check             # чего не хватает (LFS-указатели видны как [LFS])
+.\.venv\Scripts\python.exe scripts\fetch_demo_data.py --hf sotef/lct     # добрать демо-данные с Hugging Face (~336 МБ)
 .\.venv\Scripts\python.exe scripts\seed.py     # схема + демо-данные
 .\.venv\Scripts\uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
 ```
+
+> Данные нужны и локальному запуску: если панели 6ч не пришли через `git lfs pull`, возьмите их
+> с HF (`--hf sotef/lct`, режим файлов — `--hf-files`) или `--url <архив demo-data-2026.zip>`.
+> Совсем без сети сервис соберёт панели из `data/raw/buckets_2026.parquet` (дольше).
 
 ### Ключевые параметры `.env` (подробно — `services/.env.docker.example`)
 

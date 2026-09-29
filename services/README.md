@@ -123,35 +123,30 @@ ext-journal-<год>.csv ──ленивое чтение порциями (SIM
 
 Для демо-прогона (реплей 2026) нужны артефакты 2026 года. Модели, `raw/buckets_2026.parquet`,
 z-статистики, коды категорий, схема признаков и справочники — **обычными файлами в git**;
-**6ч-панели (~319 МБ; `sensor` 160 МБ > лимита GitHub 100 МБ) — в Git LFS** (`.gitattributes`).
+**6ч-панели (~319 МБ; `sensor` 160 МБ > лимита GitHub 100 МБ) — в Git LFS** (`.gitattributes`) и
+продублированы в публичном датасете **Hugging Face `sotef/lct`**. В Docker качать ничего не нужно
+(блок «Docker: данные подтягиваются сами» ниже); варианты для хоста/локального запуска:
 
 ```powershell
+# A. Git LFS — если нужны панели и на хосте
 git lfs install                     # один раз на машину
 git clone https://github.com/Sotef/lct_a8.git
 cd lct_a8; git lfs pull             # подтянуть панели 6ч (~319 МБ)
+
+# B. Скриптом (из каталога `services/`): проверить и добрать недостающее
+.\.venv\Scripts\python.exe scripts\fetch_demo_data.py --check                     # [LFS] = файл не выкачан
+.\.venv\Scripts\python.exe scripts\fetch_demo_data.py --hf sotef/lct              # Hugging Face, без токена
+.\.venv\Scripts\python.exe scripts\fetch_demo_data.py --hf sotef/lct --hf-files   # если залиты файлы, а не архив
+.\.venv\Scripts\python.exe scripts\fetch_demo_data.py --url <URL demo-data-2026.zip>   # Release/любой HTTPS
+
+# C. Публикация обновлённого набора
+.\.venv\Scripts\python.exe scripts\fetch_demo_data.py --pack                      # собрать demo-data-2026.zip + sha256
+.\.venv\Scripts\python.exe scripts\fetch_demo_data.py --hf-upload sotef/lct       # нужны huggingface_hub и `hf auth login`
 ```
 
-Проверить и получить данные скриптом (из `services/`):
-
-```powershell
-.\.venv\Scripts\python.exe scripts\fetch_demo_data.py --check   # что есть / чего не хватает
-.\.venv\Scripts\python.exe scripts\fetch_demo_data.py           # добрать недостающее (git lfs pull)
-.\.venv\Scripts\python.exe scripts\fetch_demo_data.py --url <URL demo-data-2026.zip>   # любой публичный HTTPS (Release asset)
-.\.venv\Scripts\python.exe scripts\fetch_demo_data.py --pack    # собрать архив для публикации
-
-# Hugging Face datasets: скачивание анонимное (без токена), нужен только public-датасет
-.\.venv\Scripts\python.exe scripts\fetch_demo_data.py --hf <user>/moscollector-demo-2026
-.\.venv\Scripts\python.exe scripts\fetch_demo_data.py --hf <user>/moscollector-demo-2026 --hf-files
-# ^ --hf-files тянет файлы по отдельности, если в датасете нет архива demo-data-2026.zip
-
-# Выгрузка архива в Hugging Face (нужен `pip install huggingface_hub` и `hf auth login`)
-.\.venv\Scripts\python.exe scripts\fetch_demo_data.py --pack
-.\.venv\Scripts\python.exe scripts\fetch_demo_data.py --hf-upload <user>/moscollector-demo-2026
-```
-
-Вместо флагов можно задать `DEMO_DATA_HF=<user>/<repo>` или `DEMO_DATA_URL=<URL архива>`
-(удобно для CI/Docker). Приватный HF-датасет анонимно не качается (401) — либо сделать
-датасет публичным, либо использовать `hf auth login && hf download <repo> --repo-type dataset`.
+Вместо флагов можно задать `DEMO_DATA_HF=sotef/lct` или `DEMO_DATA_URL=<URL архива>` — скрипт читает
+их сам (удобно для CI/Docker). Приватный HF-датасет анонимно не качается (401) — либо сделать
+датасет публичным, либо `hf auth login && hf download <repo> --repo-type dataset`.
 
 **Docker: данные подтягиваются сами.** `api` получает `DEMO_DATA_HF` из `services/.env`; на старте
 entrypoint делает `fetch_demo_data.py --check`, и если чего-то не хватает — вызывает
@@ -192,19 +187,25 @@ REST API /api/v1 (JWT + RBAC) → диспетчер: /top-risks, /forecasts/{id
 d:\python312\python.exe -m venv services\.venv
 services\.venv\Scripts\python.exe -m pip install -r services\requirements.txt
 
-# 2) наполнить БД (SQLite для локального запуска из .env по умолчанию;
-#    прод — PostgreSQL 12+, см. .env.example / docker-compose.yml)
+# 2) демо-данные 2026 (панели 6ч, z-stats, модели, справочники)
+#    --check покажет, чего не хватает ([LFS] = файл не выкачан из Git LFS)
 cd services
+.venv\Scripts\python.exe scripts\fetch_demo_data.py --check
+.venv\Scripts\python.exe scripts\fetch_demo_data.py --hf sotef/lct    # добрать с Hugging Face (публичный датасет)
+#    без сети: панель соберётся из data/raw/buckets_2026.parquet при первом прогоне (дольше)
+
+# 3) наполнить БД (SQLite для локального запуска из .env по умолчанию;
+#    прод — PostgreSQL 12+, см. .env.example / docker-compose.yml)
 .venv\Scripts\python.exe scripts\seed.py          # таблицы + демо-пользователи + реестр моделей
 
-# 3) ПОТОКОВЫЙ ТЕСТ НА РЕАЛЬНЫХ ДАННЫХ 2026 (не участвовали в обучении)
+# 4) ПОТОКОВЫЙ ТЕСТ НА РЕАЛЬНЫХ ДАННЫХ 2026 (не участвовали в обучении)
 #    (а) быстро: первые ~5 млн строк
 .venv\Scripts\python.exe scripts\run_demo.py --limit 5000000
 #    (б) догрузить остаток инкрементально (checkpoint по max_ts)
 .venv\Scripts\python.exe scripts\run_demo.py --no-ingest   # прогнозный цикл на последнем бакете
 .venv\Scripts\python.exe scripts\run_demo.py               # = ингвест остатка + прогнозы
 
-# 4) API
+# 5) API
 .venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 open http://127.0.0.1:8000/docs
 ```

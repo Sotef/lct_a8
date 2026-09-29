@@ -238,8 +238,11 @@ severity — `inference_contract.SEVERITY_BY_TYPE`, scale — по числу а
 - drift-мониторинг — ежеквартально (/admin/drift) + накопление процентилей p24/risk30.
 
 ## 10. Порядок развёртывания (чек-лист backend)
-0. Получить демо-данные 2026: `git lfs install && git lfs pull` (6ч-панели — Git LFS),
-   либо `python services/scripts/fetch_demo_data.py` (`--check` / `--url <архив релиза>` / `--pack`);
+0. Демо-данные 2026 — в Docker **ничего делать не нужно**: entrypoint сам делает
+   `fetch_demo_data.py --check` и при нехватке тянет архив (`DEMO_DATA_HF=sotef/lct`,
+   отключение — `SKIP_DEMO_FETCH=1`). Вручную: `python services/scripts/fetch_demo_data.py --check`,
+   затем `--hf sotef/lct` (или `--hf-files` — файлами, `--url <архив релиза>`, `--pack` — собрать
+   архив для публикации); альтернатива — `git lfs install && git lfs pull` (6ч-панели в Git LFS);
 1. Установить `services/.venv` (requirements.txt), `PostgreSQL 12+`, `alembic upgrade head`;
 2. Скопировать/симлинк `research/models` и `research/inference_contract.py`
    (или `sys.path` на research) — пути из `models_registry`/`.env`;
