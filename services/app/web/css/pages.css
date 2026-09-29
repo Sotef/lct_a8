@@ -21,7 +21,7 @@
 .login .lg .mark { width: 44px; height: 44px; border-radius: 14px; background: var(--grad); display: grid;
   place-items: center; color: var(--on-accent); box-shadow: var(--glow); }
 .login .lg b { font-family: var(--font-display); font-size: 20px; display: block; }
-.login .lg span { font-size: 10.5px; color: var(--text-dim); letter-spacing: .14em; text-transform: uppercase; }
+.login .lg div span { font-size: 8.5px; color: var(--text-dim); letter-spacing: .12em; text-transform: uppercase; }
 .login .shake { animation: shake .5s; }
 @keyframes shake { 20%, 60% { transform: translateX(-8px); } 40%, 80% { transform: translateX(8px); } }
 .demo { margin-top: 20px; border-top: 1px dashed var(--border); padding-top: 14px; color: var(--text-dim); font-size: 12px; }

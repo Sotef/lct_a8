@@ -4,7 +4,7 @@
      IndexedDB в js/mobile/offline.js — SW-кэш нужен для перезагрузки в офлайне);
    - push: показ уведомления; клик — открытие нужного экрана;
    - background sync «mc-outbox»: просьба странице отправить очередь действий. */
-const VER = "mc-v1";
+const VER = "mc-v2";
 const SHELL = `mc-shell-${VER}`;
 const RUNTIME = `mc-runtime-${VER}`;
 const SHELL_ASSETS = [
