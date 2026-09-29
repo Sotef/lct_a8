@@ -121,6 +121,83 @@ docker compose up -d --build
         фоновые воркеры: simclock (реплей) · scheduler (6ч-цикл) · ingestion · stream (живой журнал)
 ```
 
+### Граф проекта: кто откуда получает данные
+
+```mermaid
+flowchart TD
+  subgraph SRC["ИСТОЧНИКИ (только чтение)"]
+    J["Журнал СМВУ<br/>ext-journal-2019…2026.csv (≈16 ГБ)"]
+    REF["Справочники каналов и объектов"]
+    PPR["Графики ТО/ППР заказчика"]
+    P2["P2: АРМ-Контроль, СКУД, журнал ОДС<br/>(адаптеры готовы, данных нет)"]
+  end
+
+  subgraph OFF["ОФЛАЙН — обучение (research/)"]
+    FE["features.make_subdaily_panel<br/>панель 6ч «канал × бакет»"]
+    TT["tte_pipeline + tte.add_series_context<br/>z(train), серии, окна 12ч…30д"]
+    TR["обучение 4 моделей discrete hazard<br/>train ≤2024 · val 2025 · holdout 2026"]
+    AR["research/models/tte_*.cbm + calib30_access.pkl<br/>services/data: z_stats_*.csv, cat_codes_*.json, схема фич"]
+  end
+
+  subgraph RUN["РАНТАЙМ — сервис (services/)"]
+    AD["adapters/journal.py<br/>инкрементально, чекпойнт по времени"]
+    RAW[("data/raw/buckets_2026.parquet<br/>кэш 6ч-бакетов")]
+    FP["services/feature_pipeline.build_subjects<br/>raw → панель → z(train) → серии → субъекты"]
+    INF["services/inference.py + research/inference_contract<br/>S(t) 120 шагов → p24 · p72 · p7d · risk30 · exp_days"]
+    RBAM["RBAM<br/>score = risk × severity(тип) × scale(объект)"]
+  end
+
+  DB[("PostgreSQL 14<br/>predictions · decisions · maintenance_tasks<br/>alerts_log · audit_log · models_registry<br/>data_sources · users · object_risk_l2 · settings")]
+  API["FastAPI /api/v1<br/>JWT + RBAC, аудит, идемпотентность"]
+  UI["SPA/PWA диспетчера и техника<br/>пульт · карта · прогноз ↔ факт · план ТО · заявки · алерты"]
+  DEC["decision_service<br/>подтвердить / отклонить / профилактика"]
+
+  J --> AD --> RAW --> FP --> INF --> RBAM --> DB
+  REF --> FP
+  PPR --> TR
+  J --> FE --> TT --> TR --> AR
+  AR -.->|модели и train-статистики| INF
+  AR -.->|z-статистики, коды категорий, схема фич| FP
+  DB --> API --> UI
+  UI -->|решение диспетчера| DEC
+  DEC --> DB
+  DEC -->|«профилактика»| DB
+  P2 -.->|задел на будущее| FP
+```
+
+### Порядок прохождения данных
+
+| # | Шаг | Что происходит | Где в коде |
+|---|---|---|---|
+| 0 | **Обучение (офлайн)** | журнал → панель 6ч → признаки (z по train, серии, окна) → 4 модели discrete hazard + калибровка `risk30` → артефакты в репозитории | `research/features.py`, `research/tte_pipeline.py`, `research/tte_experiments.py`, `research/verify_inference.py` |
+| 1 | **Старт сервиса** | entrypoint: добрать демо-данные (HF/LFS) → дождаться БД → `seed` (схема, пользователи, реестр моделей) → uvicorn | `scripts/docker-entrypoint.sh`, `scripts/seed.py` |
+| 2 | **Приём данных** | журнал СМВУ читается чанками (дедуп по `ид_события`), агрегируется в 6ч-бакеты и складывается в кэш; в живой подаче — только новый хвост файла | `app/adapters/journal.py`, `app/workers/ingestion.py`, `app/workers/stream.py` |
+| 3 | **Признаки** | кэш → панель «канал × бакет» → z-событий по train-статистикам → серийный контекст (`серия_старт`, `дни_с_посл_*`) → субъекты текущего бакета | `app/services/feature_pipeline.py` (вызывает research через `app/research_bridge.py`) |
+| 4 | **Инференс** | `predict_risk(model, subjects)`: S(t) по 120 бакетам → `p24`, `p72`, `p7d`, `risk30`, `risk30_cal` (access), `exp_days` + SHAP-факторы «почему» | `app/services/inference.py`, `research/inference_contract.py`, `app/services/ml_registry.py` |
+| 5 | **Прогнозы в БД** | запись `predictions` на бакет (идемпотентно: старые строки бакета заменяются) | `app/services/prediction_service.py` |
+| 6 | **Приоритизация** | RBAM-скор → превентивные заявки с порогами по направлению/классу последствия, гистерезисом сроков и лимитом ёмкости | `app/services/maintenance_service.py`, `app/services/to_norm.py`, `app/services/inference.py` |
+| 7 | **Алерты** | правило `p7d ≥ ALERTS_MIN_P7D` + «тишина» по датчику → журнал алертов и Web Push (фолбэк — поллинг) | `app/workers/alerts.py`, `app/services/push_service.py` |
+| 8 | **Отдача диспетчеру** | REST + SPA: пульт (KPI и тренд), карта/граф объектов, карточка прогноза (S(t), факторы, история), план ТО, заявки, «прогноз ↔ факт» | `app/api/*`, `app/services/forecast_card.py`, `app/services/object_service.py`, `app/web/*` |
+| 9 | **Решение человека** | «подтвердить» / «отклонить» / «профилактика» → `decisions` + `audit_log`; «профилактика» сразу создаёт заявку; `simclock` не пересчитывает закреплённые решения прогнозы | `app/services/decision_service.py`, `app/services/audit_service.py` |
+| 10 | **Обратная петля** | `decisions` накапливаются как ground-truth для дообучения (автоматического переобучения нет); новая версия модели кладётся в `models_registry` и поднимается `/admin/models/reload` без рестарта | `app/services/ml_registry.py`, `app/api/admin.py`, `research/` |
+
+**Один тик (каждые +6 ч сим-времени `SIM_CLOCK=1` или 6ч-цикл по реальным часам `RUN_SCHEDULER=1`):**
+
+```mermaid
+flowchart LR
+  T["тик"] --> S1["1 ingest<br/>хвост журнала → buckets parquet"]
+  S1 --> S2["2 build_subjects<br/>raw → панель → z(train) → серия → субъекты"]
+  S2 --> S3["3 inference<br/>S(t) → p24 · risk30 · exp_days (+ SHAP)"]
+  S3 --> S4["4 predictions<br/>запись в PostgreSQL"]
+  S4 --> S5["5 auto_generate<br/>RBAM → превентивные заявки"]
+  S4 --> S6["6 alerts<br/>p7d ≥ порога → алерты + Web Push"]
+  S5 --> S7["7 API и SPA<br/>пульт · карта · карточка"]
+  S6 --> S7
+  S7 --> S8["8 решение диспетчера<br/>decisions + audit"]
+```
+
+Проверено вживую: `simclock` логирует итог каждого тика — `tick bucket=… done in …s: {feed_rows, tickets, alerts, pushed}`.
+
 **Компоненты**
 
 | Слой | Где | Задачи |
