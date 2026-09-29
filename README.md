@@ -16,6 +16,19 @@
 Проверено:  71 pytest (41 unit + 30 «кнопочных») · E2E-прогон интерфейса 33 шага · DEPLOY VERIFY: ALL OK
 ```
 
+## Быстрый старт (TL;DR)
+
+```powershell
+git clone https://github.com/Sotef/lct_a8.git
+cd lct_a8\services
+copy .env.docker.example .env        # bash: cp .env.docker.example .env
+docker compose up -d --build
+```
+
+Открыть **http://127.0.0.1:8000/** (вход: `central.operator` / `central123`). Демо-данные 2026
+(6ч-панели, модели, справочники) контейнер подтянет сам при первом старте — качать ничего не нужно.
+Подробности, вариант без Docker, HTTPS/TLS и мобильные — [§6 «Быстрый деплой»](#6-быстрый-деплой).
+
 ## Содержание
 
 1. [Ключевые функции сервиса](#1-ключевые-функции-сервиса)
@@ -300,17 +313,20 @@ docker compose down -v             # удалить тома (демо «с ну
 
 ```powershell
 cd services
-copy .env.example .env                        # DATABASE_URL по умолчанию — SQLite
+d:\python312\python.exe -m venv .venv         # любой Python 3.12: py -3.12 -m venv .venv
+copy .env.example .env                        # пути считаются от репозитория; DATABASE_URL по умолчанию — SQLite в services/data/app.db
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe scripts\fetch_demo_data.py --check             # чего не хватает (LFS-указатели видны как [LFS])
 .\.venv\Scripts\python.exe scripts\fetch_demo_data.py --hf sotef/lct     # добрать демо-данные с Hugging Face (~336 МБ)
-.\.venv\Scripts\python.exe scripts\seed.py     # схема + демо-данные
+.\.venv\Scripts\python.exe scripts\seed.py     # схема + демо-пользователи
 .\.venv\Scripts\uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
 ```
 
-> Данные нужны и локальному запуску: если панели 6ч не пришли через `git lfs pull`, возьмите их
-> с HF (`--hf sotef/lct`, режим файлов — `--hf-files`) или `--url <архив demo-data-2026.zip>`.
-> Совсем без сети сервис соберёт панели из `data/raw/buckets_2026.parquet` (дольше).
+> Ничего в `.env` править не нужно: `research/`, `data/`, `logs` определяются от расположения
+> репозитория (`services/app/config.py`). Данные нужны и локальному запуску: если панели 6ч не пришли
+> через `git lfs pull`, возьмите их с HF (`--hf sotef/lct`, режим файлов — `--hf-files`) или
+> `--url <архив demo-data-2026.zip>`; совсем без сети сервис соберёт панели из
+> `data/raw/buckets_2026.parquet` (дольше).
 
 ### Ключевые параметры `.env` (подробно — `services/.env.docker.example`)
 
@@ -324,6 +340,7 @@ copy .env.example .env                        # DATABASE_URL по умолчан
 | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` | ключи Web Push (без них работает фолбэк-поллинг `GET /alerts`) |
 | `JWT_SECRET`, `ACCESS_TOKEN_MINUTES`, `REFRESH_TOKEN_DAYS`, `LOGIN_RATE_LIMIT` | секрет и сроки токенов, ограничение попыток входа |
 | `POSTGRES_*`, `API_PORT`, `HTTPS_PORT`, `POSTGRES_PORT` | база и порты; `IMAGE_TAG`, `SKIP_SEED`, `RUN_MIGRATIONS` — поведение entrypoint |
+| `DEMO_DATA_HF=sotef/lct` | откуда контейнер добирает демо-данные при первом старте (публичный датасет HF, без токена); альтернатива — `DEMO_DATA_URL=<архив>`, проверка — `DEMO_DATA_SHA256`, таймаут — `DEMO_DATA_TIMEOUT=60`, полностью выключить сеть на старте — `SKIP_DEMO_FETCH=1` |
 
 ### Проверка на мобильных устройствах
 
