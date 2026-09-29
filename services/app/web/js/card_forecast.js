@@ -3,11 +3,18 @@ window.Cards = window.Cards || {};
 Cards.forecast = (() => {
   const { el, esc, ic, fmt, dt, riskLevel, riskColor } = UI;
   const DEC = {
-    confirm:    { t: "Подтвердить", s: "угроза подтверждена", cls: "dang", icon: "alert" },
-    reject:     { t: "Отклонить",   s: "ложное срабатывание", cls: "good", icon: "x" },
-    preventive: { t: "Профилактика", s: "создать заявку ТО", cls: "warn", icon: "wrench" },
+    confirm:    { t: "Подтвердить", s: "инцидент: проверка подтвердила тревожное сообщение", cls: "dang", icon: "alert" },
+    reject:     { t: "Отклонить",   s: "ошибка / ложное срабатывание", cls: "good", icon: "x" },
+    preventive: { t: "Профилактика", s: "ППР: планово-предупредительные работы", cls: "warn", icon: "wrench" },
   };
-  const DEC_RU = { confirm: "подтверждено", reject: "отклонено", preventive: "профилактика" };
+  const DEC_RU = { confirm: "подтверждено (инцидент)", reject: "отклонено (ошибка)",
+                   preventive: "профилактика (ППР)" };
+  /* класс тревожного сообщения по ответам заказчика: авария угрожает жизни,
+     инцидент (питание/связь) — «слепая зона», косвенно допускает аварию */
+  const CLASS_BADGE = {
+    "авария":   { cls: "high", icon: "alert" },
+    "инцидент": { cls: "mid", icon: "zap" },
+  };
 
   async function open(id, opts = {}) {
     const role = API.store.user && API.store.user.role;
@@ -27,7 +34,11 @@ Cards.forecast = (() => {
         <span class="badge ${lv.cls} ${lv.cls === "high" ? "pulse" : ""}">риск: ${lv.text}</span>
         ${c.rbam && c.rbam.plan ? `<span class="badge acc">${esc(c.rbam.plan)}</span>` : ""}
         ${P.risk30_cal !== null && P.risk30_cal !== undefined ? `<span class="badge info">калиброван</span>` : ""}
-        ${c.ticket ? `<span class="badge info">${ic("wrench", "s")} заявка #${c.ticket.id} · ${esc(c.ticket.status)}</span>` : ""}</div>
+        ${c.ticket ? `<span class="badge info">${ic("wrench", "s")} заявка #${c.ticket.id} · ${esc(c.ticket.status)}</span>` : ""}
+        ${c.класс_события ? `<span class="badge ${(CLASS_BADGE[c.класс_события] || {}).cls || "info"}">
+          ${ic((CLASS_BADGE[c.класс_события] || {}).icon || "info", "s")} ${esc(c.класс_события)}: ${esc(c.группа_события || "—")}
+          ${c.косвенно_авария ? '<span class="faint"> · косвенно допускает аварию</span>' : ""}</span>` : ""}
+        ${c.охранный ? `<span class="badge">${ic("shield", "s")} охранный канал · маршрут нарушителя</span>` : ""}</div>
       <div style="font-size:19px;font-weight:800;font-family:var(--font-display)">${esc(c.object && c.object.name || c.object_id)}</div>
       <div class="muted" style="margin-top:5px">${ic("pin", "s")} ${esc(c.object && c.object.type || "")} · район ${esc(c.object && c.object.district || "—")}</div>
       <div class="muted" style="margin-top:4px">${ic("cpu", "s")} ${esc(c.sensor_type || "—")} · ${esc(c.channel_name || c.channel_id)}

@@ -10,6 +10,7 @@ from .. import task_cfg
 from ..adapters.journal import bucket_to_timestamp
 from . import decision_service
 from . import object_service
+from .alarm_service import alarm_class, is_security
 
 
 def build_card(db: Session, prediction: dbm.Prediction) -> dict:
@@ -19,6 +20,7 @@ def build_card(db: Session, prediction: dbm.Prediction) -> dict:
     ch = db.query(dbm.ChannelRef).filter(
         dbm.ChannelRef.channel_id == prediction.channel_id).first()
     tasks = dbm.Decision.__table__.columns.keys()  # noqa: F841
+    _ac = alarm_class(ch.sensor_type if ch else None)      # класс по ответам заказчика
 
     risk_level = _risk_level(prediction)
     horizon = {
@@ -37,6 +39,12 @@ def build_card(db: Session, prediction: dbm.Prediction) -> dict:
         "sensor_type": ch.sensor_type if ch else None,
         "system_type": ch.system_type if ch else None,
         "tag": ch.tag if ch else None,
+        # класс тревожного сообщения: авария (пожар/наводнение/газ/террор/аном. темп.)
+        # или инцидент (электроснабжение/связь → «слепые зоны», косвенно допускает аварию)
+        "класс_события": _ac["класс"],
+        "группа_события": _ac["группа"],
+        "косвенно_авария": _ac["косвенно_авария"],
+        "охранный": is_security(ch.sensor_type if ch else None),
         "object": {
             "object_id": prediction.object_id,
             "name": obj.name if obj else None,

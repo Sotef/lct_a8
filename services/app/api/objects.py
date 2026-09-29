@@ -95,3 +95,36 @@ def object_risks(object_id: str, task: str | None = Query(None),
         raise HTTPException(status_code=400, detail="неизвестная задача")
     return {"object_id": object_id,
             "risks": object_service.object_risks(db, object_ids=[object_id], task=task)}
+
+
+@router.get("/{object_id}/security-route")
+def object_security_route(object_id: str, hours: int = Query(72, ge=6, le=720),
+                          task: str | None = Query(None),
+                          db: Session = Depends(get_db),
+                          user: dbm.User = Depends(
+                              require_roles("dispatcher", "central", "tech"))):
+    """«Маршрут движения нарушителя»: сработки охранных каналов объекта по сим-времени.
+
+    Охранные сработки (люк, аварийный выход, дверь, движение, стекло) заказчик относит
+    к авариям категории «террор, проникновение нарушителя» — по ним строится маршрут.
+    Возвращается упорядоченная цепочка сработок (6ч-бакеты), а не гео-трек: координаты
+    пикетов в данных не подтверждены.
+    """
+    allowed = scoped_object_ids(user, db)
+    if allowed is not None and object_id not in allowed:
+        raise HTTPException(status_code=403, detail="объект вне вашего района")
+    if task and task not in task_cfg.ALL_TASKS:
+        raise HTTPException(status_code=400, detail="неизвестная задача")
+    return object_service.security_route(db, object_id, hours=hours, task=task)
+
+
+@router.get("/{object_id}/alarm-classes")
+def object_alarm_classes(user: dbm.User = Depends(
+        require_roles("dispatcher", "central", "tech"))):
+    """Справочник классов тревожных сообщений (авария/инцидент) по ответам заказчика."""
+    from ..services.alarm_service import ALARM_GROUPS, INCIDENT_GROUPS
+    return {"авария": {g: list(t) for g, t in ALARM_GROUPS.items()},
+            "инцидент": {g: list(t) for g, t in INCIDENT_GROUPS.items()},
+            "пояснение": ("авария = угроза жизни (пожар, наводнение, газ, террор, аномальная "
+                          "температура); инцидент = потеря связи/электроснабжения («слепые зоны»), "
+                          "косвенно допускает аварию")}

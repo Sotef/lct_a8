@@ -22,6 +22,7 @@ from ..adapters.journal import bucket_to_timestamp
 from . import feature_pipeline as fp
 from . import inference as inf
 from . import ml_registry
+from .alarm_service import alarm_class as _alarm_class
 
 log = logging.getLogger("prediction")
 
@@ -220,6 +221,7 @@ def shap_factors_batch(task: str, subjects: pd.DataFrame,
 def _pred_to_item(p: dbm.Prediction, sensor_type=None, sensor_name=None,
                   obj=None, tag=None, system_type=None):
     sp = p.surv_points or []
+    _ac = _alarm_class(sensor_type)
     p7d = p.p7d
     if p7d is None and len(sp) >= 6:
         # старые записи: колонки p7d ещё не было — считаем из S(t)
@@ -243,6 +245,11 @@ def _pred_to_item(p: dbm.Prediction, sensor_type=None, sensor_name=None,
         "инж_система": system_type,
         "severity": p.severity,
         "scale": p.scale,
+        # класс последствия по ответам заказчика: авария (пожар/наводнение/газ/террор/аном. темп.)
+        # или инцидент (электроснабжение/связь → «слепые зоны», косвенно намекают на аварию)
+        "класс_события": _ac["класс"],
+        "группа_события": _ac["группа"],
+        "косвенно_авария": _ac["косвенно_авария"],
         "p24": p.p24,
         "p72": p.p72,
         "p7d": round(p7d, 6) if p7d is not None else None,

@@ -474,6 +474,80 @@ def test_history_and_top_risks_ignore_previous_cycle(client, monkeypatch):
     assert ch["rows"] and all(r["bucket_ts"][:10] <= "2026-01-02" for r in ch["rows"]), ch["rows"]
 
 
+# === 10. Классы тревожных сообщений и маршрут нарушителя ==========================
+def test_alarm_classes_and_security_route(client):
+    """Ответы заказчика: авария (пожар/наводнение/газ/террор/аном. температура) против
+    инцидента (питание/связь); охранные сработки = «террор, проникновение» → маршрут."""
+    import datetime as _dt
+
+    hc, ht = tok(client, "central.t"), tok(client, "tech.t")
+    # класс события приходит в элементах топа («Состояние насоса» → авария/наводнение)
+    tr = act("top-risks: class поля", lambda: client.get(
+        B + "/top-risks?task=wear&k=100&horizon=30d", headers=hc))
+    it = tr.json()["items"][0]
+    assert it["класс_события"] == "авария" and it["группа_события"] == "наводнение", it
+    assert it["косвенно_авария"] is False
+    # «Состояние фазы» → инцидент/электроснабжение, косвенно допускает аварию
+    from app.services.alarm_service import alarm_class
+    assert alarm_class("Состояние фазы") == {"класс": "инцидент", "группа": "электроснабжение",
+                                             "косвенно_авария": True}
+    cl = act("alarm-classes справочник", lambda: client.get(
+        B + "/objects/OBJ1/alarm-classes", headers=hc))
+    body = cl.json()
+    assert "пожар" in body["авария"] and "террор" in body["авария"]
+    assert "электроснабжение" in body["инцидент"] and "связь" in body["инцидент"]
+
+    # охранные сработки объекта → маршрут нарушителя (порядок по сим-времени)
+    db = dbmod.SessionLocal()
+    if db.get(dbm.ChannelRef, "CH8") is None:
+        db.add(dbm.ChannelRef(channel_id="CH8", object_id="OBJ1",
+                              sensor_type="КД Люк", sensor_name="Люк-8", tag="1.2.13"))
+    db.add(dbm.ChannelRef(channel_id="CH9A", object_id="OBJ1",
+                          sensor_type="КД Дверь", sensor_name="Дверь-9"))
+    for ts, ch in [(_dt.datetime(2026, 1, 2, 6), "CH8"), (_dt.datetime(2026, 1, 3, 12), "CH9A")]:
+        db.add(dbm.Prediction(task="access", channel_id=ch, object_id="OBJ1", bucket_ts=ts,
+                              p24=0.4, p72=0.5, p7d=0.6, risk30=0.7, risk30_cal=0.7,
+                              exp_days=3.0, score=0.6, severity=0.7, scale=1.0,
+                              plan="текущий квартал", surv_points=[0.01, 0.02, 0.03, 0.05, 0.4, 0.5, 0.9],
+                              event_flag=1, obs_days=1.0, model_version="test-sec"))
+    db.commit()
+    db.close()
+
+    r = act("security-route: маршрут нарушителя", lambda: client.get(
+        B + "/objects/OBJ1/security-route?hours=720", headers=hc))
+    route = r.json()
+    assert route["points"], "маршрут пуст, хотя есть охранные сработки"
+    kinds = {p["тип_датчика"] for p in route["points"]}
+    assert kinds <= {"КД Люк", "КД Дверь", "КД АВ", "Датчик движения", "Стекло",
+                     "9-секционный люк"}, kinds
+    assert all(p["группа_события"] == "террор" for p in route["points"])
+    ts = [p["bucket_ts"] for p in route["points"]]
+    assert ts == sorted(ts), f"маршрут не упорядочен: {ts}"
+    assert any(p["тег_пикета"] for p in route["points"])
+    # RBAC: техник своего района видит, чужого — нет
+    assert client.get(B + "/objects/OBJ1/security-route",
+                      headers=ht).status_code == 200
+    assert client.get(B + "/objects/OBJ2/security-route",
+                      headers=ht).status_code == 403
+    # объект без охранных каналов — пустой маршрут, но 200
+    empty = client.get(B + "/objects/OBJ2/security-route", headers=hc).json()
+    assert empty["points"] == []
+
+
+def test_ticket_close_reason_in_history(client):
+    """Закрытие заявки с причиной («что устранено»): причина остаётся в истории заявки и аудите."""
+    hd, ht = tok(client, "disp.t"), tok(client, "tech.t")
+    tid = make_open_ticket(client, hd, channel="CH7")      # в текущем круге прогнозы есть у CH7
+    reason = "устранено: контактор"
+    r = act("ticket: закрытие с причиной", lambda: client.patch(
+        B + f"/maintenance/tickets/{tid}", headers=hd,
+        json={"status": "in_progress", "comment": f"заменили контактор, связь восстановлена · {reason}"}))
+    assert r.status_code == 200, r.text
+    t1 = ticket_by_id(client, hd, tid)
+    assert reason in (t1["comment"] or ""), t1["comment"]
+    assert "disp.t" in (t1["comment"] or "")
+
+
 # === 8. Отчёт по времени операций ================================================
 def test_report_timings(client):
     lines = ["| операция | время, мс | ok |", "|---|---|---|"]

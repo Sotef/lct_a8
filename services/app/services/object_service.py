@@ -136,6 +136,57 @@ def risk7d_by_object(db: Session, object_ids: list[str] | None = None,
     return out
 
 
+def security_route(db: Session, object_id: str, hours: int = 72,
+                   task: str | None = None) -> dict:
+    """«Маршрут движения нарушителя» по сработкам охранной системы объекта.
+
+    Заказчик (ответ 2): сработки охранной системы (люк, аварийный выход, дверь, движение,
+    стекло) — авария категории «террор, проникновение нарушителя», по ним строится маршрут.
+    Реальные координаты пикетов у нас не подтверждены, поэтому маршрут строится как
+    упорядоченная по сим-времени цепочка сработавших охранных точек объекта
+    (бакеты 6 ч, признак события — `predictions.event_flag`).
+    """
+    from .alarm_service import SECURITY_TYPES, alarm_class
+
+    obj = db.get(dbm.ObjectRef, object_id)
+    rows = (db.query(dbm.Prediction, dbm.ChannelRef.sensor_type, dbm.ChannelRef.sensor_name,
+                     dbm.ChannelRef.tag)
+            .outerjoin(dbm.ChannelRef, dbm.ChannelRef.channel_id == dbm.Prediction.channel_id)
+            .filter(dbm.Prediction.object_id == object_id,
+                    dbm.ChannelRef.sensor_type.in_(list(SECURITY_TYPES)),
+                    dbm.current_only())
+            .all())
+    if task:
+        rows = [r for r in rows if r[0].task == task]
+    if not rows:
+        return {"object_id": object_id,
+                "object_name": getattr(obj, "name", None),
+                "hours": hours, "points": [], "buckets": 0,
+                "note": "по объекту нет охранных каналов в текущем круге прогнозов"}
+    anchor = max((r[0].bucket_ts for r in rows if r[0].bucket_ts is not None), default=None)
+    since = (anchor - dt.timedelta(hours=max(6, int(hours)))) if anchor else None
+    points = []
+    for p, st, sn, tag in rows:
+        if p.event_flag != 1 or p.bucket_ts is None:
+            continue
+        if since is not None and p.bucket_ts < since:
+            continue
+        ac = alarm_class(st)
+        points.append({"bucket_ts": p.bucket_ts.isoformat(),
+                       "время": p.bucket_ts.strftime("%d.%m %H:%M"),
+                       "channel_id": p.channel_id, "тип_датчика": st, "название_датчика": sn,
+                       "тег_пикета": tag, "severity": p.severity,
+                       "класс_события": ac["класс"], "группа_события": ac["группа"],
+                       "task": p.task})
+    points.sort(key=lambda x: (x["bucket_ts"], -(x["severity"] or 0)))
+    return {"object_id": object_id, "object_name": getattr(obj, "name", None),
+            "hours": int(hours), "buckets": len({p["bucket_ts"] for p in points}),
+            "points": points,
+            "note": ("цепочка сработок охранных каналов (люк, аварийный выход, дверь, движение, "
+                     "стекло) по 6ч-бакетам сим-времени: разновидность аварии «террор, "
+                     "проникновение нарушителя», диспетчер проводит дополнительную проверку")}
+
+
 def graph_data(db: Session, max_per_hub: int = 40) -> dict:
     """Схема связности: объекты ↔ «пикеты» (p3 из тега инж. системы).
 

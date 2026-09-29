@@ -232,7 +232,62 @@ window.addEventListener("load", async () => {
       return `ответ: «${((q(".toast") || {}).textContent || "").trim().slice(0, 60)}»`;
     }, () => true);
 
-    /* 4. Алерты -------------------------------------------------------------- */
+    /* 3b. Ответы заказчика: класс события, маршрут нарушителя, «что устранено» ---------- */
+    await step("Карточка прогноза: класс тревожного сообщения", async () => {
+      await App.navigate("dashboard"); await sleep(700);
+      const item = q("#pagebox .ritem, #pagebox .m-item");
+      if (!item) return "нет элементов топа";
+      click(item);
+      await wait(() => q(".drawer .dbody .hero"), 9000);
+      const txt = (q(".drawer .dbody .hero") || {}).textContent || "";
+      const m = txt.match(/(авария|инцидент):[^·]*/i);
+      const okhran = /охранный канал/.test(txt);
+      Overlay.closeDrawer();
+      return m ? `класс: «${m[0].trim().slice(0, 46)}»${okhran ? " · охранный" : ""}`
+               : "класс не показан (тип канала вне справочника)";
+    }, () => true);
+
+    await step("Карточка объекта: маршрут движения нарушителя", async () => {
+      const tr = await API.get("/top-risks?task=access&k=5&horizon=30d").catch(() => null);
+      const oid = tr && tr.items && tr.items.length ? tr.items[0].object_id : null;
+      if (!oid) return "нет объектов с прогнозами доступа";
+      Cards.object.open(oid);
+      await wait(() => q(".drawer .dbody .dsec"), 9000);
+      const has = await wait(() => !!q("#secroute"), 7000);
+      let res;
+      if (has) {
+        const tp = qa("#secroute .badge").length;
+        const note = ((q("#secroute .note") || {}).textContent || "").trim().slice(0, 70);
+        res = `маршрут найден · меток ${tp} · «${note}»`;
+      } else {
+        const oidEnc = encodeURIComponent(oid);
+        const r = await API.get(`/objects/${oidEnc}/security-route?hours=72`).catch(() => null);
+        res = `блок скрыт (охранных сработок за 72 ч: ${r ? (r.points || []).length : "?"})`;
+      }
+      Overlay.closeDrawer();
+      return res;
+    }, () => true);
+
+    await step("Заявка: справочник «что устранено» в истории", async () => {
+      await App.navigate("tickets");
+      await wait(() => q("#pagebox .kanban, #pagebox .m-tabs"), 9000);
+      const card = q("#pagebox .tk, #pagebox .m-item");
+      if (!card) return "заявок нет — пропуск";
+      click(card);
+      await wait(() => q(".drawer .dsec"), 9000);
+      const sel = q(".drawer #trs");
+      if (!sel) { Overlay.closeDrawer(); return "поля «что устранено» нет"; }
+      const opts = [...sel.options].map(o => o.value).filter(Boolean);
+      sel.value = "контактор"; sel.dispatchEvent(new Event("change"));
+      const cm = q(".drawer #cm"); if (cm) cm.value = "заменили контактор, связь восстановлена";
+      const btn = qa(".drawer .dfoot [data-s]").find(b => ["in_progress", "done"].includes(b.dataset.s));
+      let sent = false;
+      if (btn) { click(btn); sent = await wait(() => !q(".drawer") || q(".toast"), 9000); }
+      const toast = ((q(".toast") || {}).textContent || "").trim().slice(0, 40);
+      Overlay.closeDrawer();
+      return `вариантов: ${opts.length} (${opts.slice(0, 3).join(", ")}…) · действие: ${sent ? "ok" : "нет"} ${toast}`;
+    }, () => true);
+
     await step("Алерты: раздел, фильтр направления, «Обновить»", async () => {
       await App.navigate("alerts");
       await wait(() => q("#pagebox .h1"), 9000);

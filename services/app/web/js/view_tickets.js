@@ -338,6 +338,16 @@ Views.tickets = (() => {
         <button class="btn ghost xs" id="tsave">${ic("check", "s")} сохранить дату</button>
         <span class="faint" style="font-size:11px">${t.scheduled_at ? "назначено " + dt(t.scheduled_at) : "дата не назначена"}</span>
       </div>
+      <div class="row wrap" style="gap:8px;margin-bottom:6px;align-items:center">
+        <label class="chk" style="gap:6px">что устранено (по «Неисправен»)
+          <select id="trs" style="padding:4px 8px;border-radius:8px;border:1px solid var(--border);background:var(--bg-2)">
+            <option value="">— не указано</option>
+            ${["автомат", "кабель", "контактор", "модуль связи", "питание шкафа", "прочее"]
+              .map(x => `<option value="${esc(x)}">${esc(x)}</option>`).join("")}
+          </select></label>
+        <span class="faint" style="font-size:11px">перечень согласован с заказчиком (ремонт: автомат, кабель,
+          контактор, модуль связи, питание шкафа; причина может быть и вне коллектора — РСО, повреждение в земле)</span>
+      </div>
       <textarea class="inp" id="cm" rows="2" placeholder="комментарий к действию (попадёт в журнал заявки и аудит)"></textarea>
       <div class="row wrap">${opts.map(s => {
         const c = COLS.find(x => x.k === s) || { t: s };
@@ -359,8 +369,10 @@ Views.tickets = (() => {
     f.querySelector("#tsave").onclick = saveDate;
     f.querySelector("#tsched").onchange = saveDate;
     f.querySelectorAll("[data-s]").forEach(b => b.onclick = async () => {
-      const status = b.dataset.s, cm = f.querySelector("#cm").value.trim();
-      if (status === "done" && !cm) {
+      const status = b.dataset.s, cm0 = f.querySelector("#cm").value.trim();
+      const rs = ((f.querySelector("#trs") || {}).value || "").trim();
+      const cm = cm0 + (rs ? `${cm0 ? " · " : ""}устранено: ${rs}` : "");
+      if (status === "done" && !cm0) {
         f.querySelector("#te").textContent = "для закрытия заявки нужен комментарий о выполненных работах";
         return;
       }
