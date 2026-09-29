@@ -150,8 +150,13 @@
 | `services/data/raw/buckets_2026.parquet` | сырой 6ч-кэш 2026: из него на первом запуске собираются панели |
 | `services/data/z_stats_*.csv`, `_features_schema.json`, `cat_codes_*.json`, `l2_object_risk.parquet` | train-статистики z, схема признаков, коды категорий, L2-риски |
 
+**В Git LFS (~319 МБ):** панели `services/data/panels/*.csv` (6ч-панели четырёх задач) —
+`git lfs pull`, либо `services/scripts/fetch_demo_data.py --hf <user>/<repo>` /
+`--url <архив demo-data-2026.zip>` / `--hf-files`.
+
 **Не в git** (и для демо не требуется): исходные журналы `ext-journal-*.csv` (нужны для загрузки новых
-данных и переобучения), панели `services/data/panels/*.csv` (пересобираются из raw-кэша), БД, логи, TLS-ключи.
+данных и переобучения), БД, логи, TLS-ключи. Если панели не пришли — сервис пересобирает их из raw-кэша
+`services/data/raw/buckets_2026.parquet` при первом запуске.
 
 ---
 
@@ -246,7 +251,8 @@ docker compose up -d --build
 
 > Демо-данные 2026 (панели 6ч, raw-бакеты, модели, справочники) — в репозитории: мелкое —
 > обычными файлами, **6ч-панели — через Git LFS** (файл `sensor` >100 МБ GitHub иначе не примет).
-> Проверка/получение: `services/scripts/fetch_demo_data.py` (`--check`, `--url <архив релиза>`, `--pack`).
+> Проверка/получение: `services/scripts/fetch_demo_data.py` (`--check`, `--url <архив релиза>`,
+> `--hf <user>/<repo>` для Hugging Face, `--pack`).
 > Если LFS недоступен — панель пересоберётся из `raw/buckets_2026.parquet` при первом запуске.
 
 Через 2–3 минуты после первой сборки:

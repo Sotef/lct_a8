@@ -113,7 +113,7 @@ ext-journal-<год>.csv ──ленивое чтение порциями (SIM
 > (в git его нет — ~16 ГБ всех лет). В Docker он приходит из read-only тома
 > `../research:/workspace/research`.
 
-## Демо-данные 2026 (Git LFS / GitHub)
+## Демо-данные 2026 (Git LFS / Hugging Face / GitHub)
 
 Для демо-прогона (реплей 2026) нужны артефакты 2026 года. Модели, `raw/buckets_2026.parquet`,
 z-статистики, коды категорий, схема признаков и справочники — **обычными файлами в git**;
@@ -130,9 +130,22 @@ cd lct_a8; git lfs pull             # подтянуть панели 6ч (~319 
 ```powershell
 .\.venv\Scripts\python.exe scripts\fetch_demo_data.py --check   # что есть / чего не хватает
 .\.venv\Scripts\python.exe scripts\fetch_demo_data.py           # добрать недостающее (git lfs pull)
-.\.venv\Scripts\python.exe scripts\fetch_demo_data.py --url <URL demo-data-2026.zip>   # из GitHub Release (asset)
+.\.venv\Scripts\python.exe scripts\fetch_demo_data.py --url <URL demo-data-2026.zip>   # любой публичный HTTPS (Release asset)
 .\.venv\Scripts\python.exe scripts\fetch_demo_data.py --pack    # собрать архив для публикации
+
+# Hugging Face datasets: скачивание анонимное (без токена), нужен только public-датасет
+.\.venv\Scripts\python.exe scripts\fetch_demo_data.py --hf <user>/moscollector-demo-2026
+.\.venv\Scripts\python.exe scripts\fetch_demo_data.py --hf <user>/moscollector-demo-2026 --hf-files
+# ^ --hf-files тянет файлы по отдельности, если в датасете нет архива demo-data-2026.zip
+
+# Выгрузка архива в Hugging Face (нужен `pip install huggingface_hub` и `hf auth login`)
+.\.venv\Scripts\python.exe scripts\fetch_demo_data.py --pack
+.\.venv\Scripts\python.exe scripts\fetch_demo_data.py --hf-upload <user>/moscollector-demo-2026
 ```
+
+Вместо флагов можно задать `DEMO_DATA_HF=<user>/<repo>` или `DEMO_DATA_URL=<URL архива>`
+(удобно для CI/Docker). Приватный HF-датасет анонимно не качается (401) — либо сделать
+датасет публичным, либо использовать `hf auth login && hf download <repo> --repo-type dataset`.
 
 Если LFS недоступен — сервис соберёт панель из `services/data/raw/buckets_2026.parquet`
 при первом запуске (дольше): `scripts/run_demo.py --recompute-panel` или просто запуск.

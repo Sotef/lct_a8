@@ -18,6 +18,14 @@
     python services/scripts/fetch_demo_data.py --url <URL> # скачать архив demo-data-2026.zip
     python services/scripts/fetch_demo_data.py --pack       # собрать архив для публикации
 
+    # Hugging Face datasets: скачать (анонимно, без токена) / загрузить (нужен токен)
+    python services/scripts/fetch_demo_data.py --hf <user>/moscollector-demo-2026
+    python services/scripts/fetch_demo_data.py --hf <user>/moscollector-demo-2026 --hf-files
+    python services/scripts/fetch_demo_data.py --pack && ... --hf-upload <user>/moscollector-demo-2026
+
+Переменные окружения (если флаги не переданы): `DEMO_DATA_HF=<user>/<repo>`,
+`DEMO_DATA_URL=<URL архива>` — удобно для CI/Docker.
+
 Если LFS и архив недоступны — панель 6ч пересобирается из `raw/buckets_2026.parquet`
 при первом запуске (дольше).
 """
@@ -25,11 +33,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import pathlib
 import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 import urllib.request
 import zipfile
 
@@ -149,7 +159,7 @@ def fetch_url(url: str, sha256: str | None = None) -> bool:
     with tempfile.TemporaryDirectory(prefix="mc_demo_") as td:
         tmp = pathlib.Path(td) / ARCHIVE_NAME
         try:
-            urllib.request.urlretrieve(url, tmp)
+            _download(url, tmp)          # с таймаутом и потоково
         except Exception as exc:  # noqa: BLE001
             print("  ошибка загрузки: %s" % exc)
             return False
@@ -194,7 +204,102 @@ def cmd_pack(out: pathlib.Path) -> int:
     print("       git add services/data/panels && git push   # LFS-объекты уедут вместе с push")
     print("  2) Release — загрузить %s в GitHub Release с тегом `demo-data-2026`," % out.name)
     print("     затем получать данные: fetch_demo_data.py --url <URL ассета>")
+    print("  3) Hugging Face — выгрузить в datasets (public, скачивание без токена):")
+    print("       pip install huggingface_hub && hf auth login")
+    print("       fetch_demo_data.py --hf-upload <user>/<repo>")
+    print("     затем у любой машины: fetch_demo_data.py --hf <user>/<repo>")
     return 0
+
+
+# --- Hugging Face Datasets (анонимная прямая ссылка; upload — по токену) --------
+HF_RESOLVE = "https://huggingface.co/datasets/{repo}/resolve/main/{path}"
+HF_TIMEOUT = 90
+
+
+def hf_url(repo: str, path: str) -> str:
+    return HF_RESOLVE.format(repo=repo.strip("/"),
+                             path=urllib.parse.quote(path, safe="/"))
+
+
+def _download(url: str, target: pathlib.Path, timeout: int = HF_TIMEOUT) -> None:
+    req = urllib.request.Request(url, headers={"User-Agent": "moscollector-demo-fetch"})
+    with urllib.request.urlopen(req, timeout=timeout) as r, target.open("wb") as f:
+        shutil.copyfileobj(r, f, length=1024 * 1024)
+
+
+def hf_hint(repo: str) -> None:
+    print("\nHugging Face отвечает 401/404, если датасета нет или он приватный"
+          " — анонимно качаются только public-датасеты.")
+    print("  • проверьте, что он публичный: https://huggingface.co/datasets/%s"
+          % repo.strip("/"))
+    print("  • приватный вариант: hf auth login && hf download %s %s"
+          " --repo-type dataset --local-dir . && "
+          "fetch_demo_data.py --url <верните ссылку вручную>" % (repo.strip("/"), ARCHIVE_NAME))
+    print("  • или выгрузите архив в GitHub Release и скачайте через --url")
+
+
+def hf_download(repo: str, files: bool = False, sha256: str | None = None) -> bool:
+    """Скачать demo-data-2026.zip из HF-datasets или (files=True) — файлы по отдельности."""
+    if not files:
+        ok = fetch_url(hf_url(repo, ARCHIVE_NAME), sha256)
+        if not ok:
+            hf_hint(repo)
+        return ok
+    got = 0
+    for rel, _must, name in REQUIRED:
+        target = ROOT / rel
+        if target.exists() and target.stat().st_size:
+            continue
+        print("• %s (%s)" % (rel, name))
+        try:
+            _download(hf_url(repo, rel), target)
+            got += 1
+        except Exception as exc:  # noqa: BLE001
+            print("  ошибка: %s" % exc)
+    print("скачано файлов: %d" % got)
+    return got > 0
+
+
+def hf_cli() -> str | None:
+    """Путь к HF CLI: $HF_CLI → PATH → ~/.local/bin/hf(.exe)."""
+    env = os.getenv("HF_CLI")
+    if env and pathlib.Path(env).exists():
+        return env
+    for exe in ("hf", "huggingface-cli"):
+        found = shutil.which(exe)
+        if found:
+            return found
+    for name in ("hf.exe", "hf", "huggingface-cli.exe"):
+        cand = pathlib.Path.home() / ".local" / "bin" / name
+        if cand.exists():
+            return str(cand)
+    return None
+
+
+def hf_upload(repo: str, path: pathlib.Path) -> int:
+    """Загрузить архив в HF datasets (нужен `hf` CLI и токен)."""
+    exe = hf_cli()
+    if not exe:
+        print("Hugging Face CLI не найден. Установите и авторизуйтесь:")
+        print("  pip install huggingface_hub")
+        print("  hf auth login            # токен: huggingface.co/settings/tokens")
+        print("  повтор:  fetch_demo_data.py --hf-upload %s" % repo)
+        return 1
+    if not path.exists():
+        print("нет архива %s — соберите: --pack" % path)
+        return 1
+    cmd = [exe, "upload", repo, str(path), path.name, "--repo-type", "dataset"]
+    print("• " + " ".join(cmd))
+    code, out = _run(cmd, ROOT)
+    tail = out.strip()[-800:]
+    if tail:
+        print(tail)
+    if code != 0:
+        print("Не удалось. Проверьте токен: huggingface.co/settings/tokens → `%s auth login`" % exe)
+    else:
+        print("\nГотово. Скачивание без логина:")
+        print("  fetch_demo_data.py --hf %s" % repo)
+    return code
 
 
 def cmd_default(url: str | None) -> int:
@@ -209,30 +314,47 @@ def cmd_default(url: str | None) -> int:
     print("\nНе удалось получить все данные автоматически. Варианты:")
     print("  • git lfs install && git lfs pull            # панели 6ч (~319 МБ)")
     print("  • fetch_demo_data.py --url <URL demo-data-2026.zip>")
+    print("  • fetch_demo_data.py --hf <user>/<repo>      # Hugging Face (анонимно)")
     print("  • либо запустить сервис как есть: панель 6ч пересоберётся из")
     print("    raw/buckets_2026.parquet (дольше) — scripts/run_demo.py --recompute-panel")
     return 1
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Демо-данные 2026 из GitHub (LFS/Release)")
+    ap = argparse.ArgumentParser(
+        description="Демо-данные 2026: Git LFS / Hugging Face / архив релиза")
     ap.add_argument("--check", action="store_true", help="только отчёт о наличии")
     ap.add_argument("--url", default=None,
-                    help="URL архива demo-data-2026.zip (GitHub Release asset)")
+                    help="URL архива demo-data-2026.zip (Release/любой публичный HTTPS)")
+    ap.add_argument("--hf", default=None, metavar="USER/REPO",
+                    help="скачать из Hugging Face datasets (анонимно по прямой ссылке)")
+    ap.add_argument("--hf-files", action="store_true",
+                    help="с --hf: тянуть файлы по отдельности (если в репо нет архива)")
+    ap.add_argument("--hf-upload", default=None, metavar="USER/REPO",
+                    help="загрузить demo-data-2026.zip в HF datasets (нужен hf CLI + токен)")
     ap.add_argument("--sha256", default=None, help="ожидаемая контрольная сумма архива")
     ap.add_argument("--pack", action="store_true", help="собрать архив для публикации")
     ap.add_argument("--out", default=str(SERVICE / "data" / ARCHIVE_NAME),
-                    help="путь архива для --pack")
+                    help="путь архива для --pack / --hf-upload")
     args = ap.parse_args()
+
+    # переменные окружения как значения по умолчанию (удобно в CI/Docker)
+    url = args.url or os.getenv("DEMO_DATA_URL") or None
+    hf = args.hf or os.getenv("DEMO_DATA_HF") or None
 
     if args.check:
         return cmd_check(verbose=True)
     if args.pack:
         return cmd_pack(pathlib.Path(args.out))
-    if args.url:
-        ok = fetch_url(args.url, args.sha256)
+    if args.hf_upload:
+        return hf_upload(args.hf_upload, pathlib.Path(args.out))
+    if hf:
+        ok = hf_download(hf, files=args.hf_files, sha256=args.sha256)
         return 0 if (ok and cmd_check(verbose=False) == 0) else 1
-    return cmd_default(args.url)
+    if url:
+        ok = fetch_url(url, args.sha256)
+        return 0 if (ok and cmd_check(verbose=False) == 0) else 1
+    return cmd_default(url)
 
 
 if __name__ == "__main__":
